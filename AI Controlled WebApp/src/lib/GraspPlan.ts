@@ -1530,6 +1530,17 @@ function CheckPlacedPose(Object_: Prism, Real: Prism, T: Point3, Pitch: number, 
     }
     const Verdict = ClosingSweep(Real, Frame, Context.Servos, undefined, undefined, false, !!Final.Deep);
     Final.Sweep = Verdict;
+    if (Lenient) {
+      // Wider across the jaws (as measured, unpadded) than the moving jaw reaches across from the fixed pad, swung fully
+      // open (its hinge's offset plus its length): the jaws cannot span it, so what the sweep calls a touch is a pinch of a
+      // corner or rim past the finger tips (2026-10-18: a 12 x 12 cm box, wrist roll 1590, planned at its top edge).
+      // (A round one: its measured diameter, whichever way the jaws face it.)
+      const AcrossCm = Object_.Round && Object_.SizeCm ? Math.max(...Object_.SizeCm) : WidthAcross(Object_, Final.Uh);
+      if (AcrossCm > MaxJawSpanCm) {
+        return { Ok: false, Pitch, Stage: 1, Code: "wide", Info: Final,
+          Why: `at wrist ${Deg(Pitch)} deg it is ${AcrossCm.toFixed(1)} cm across the jaws, more than the ${MaxJawSpanCm.toFixed(1)} cm the moving jaw reaches across from the fixed pad fully open` };
+      }
+    }
     if (!Verdict.Ok && Lenient) {
       // Whatever the closing's verdict, the moving jaw must meet it where it was measured (not close past it or miss
       // the jaws' plane), and the open jaw must not already be in it: else it is no grasp at all.
@@ -1638,6 +1649,8 @@ function SideOf(JawAxis: XY) {
   return [Math.abs(Toward.x) >= 0.38 ? (Toward.x > 0 ? "left" : "right") : null,
     Math.abs(Toward.y) >= 0.38 ? (Toward.y > 0 ? "far" : "near") : null].filter(Boolean).join("-") || "near";
 }
+// The most the jaws span (cm, gripper x): from the fixed pad to the moving jaw's tip swung fully open (about 11.1).
+const MaxJawSpanCm = MovingJawHinge.x + MovingJawReachCm - ToolInGripper.x;
 const WidthAcross = (Object_: Prism, Uh: XY) => Object_.SizeCm ? Math.abs(Uh.x) * Object_.SizeCm[0] + Math.abs(Uh.y) * Object_.SizeCm[1] : Infinity;
 
 export type PlanResult = { Plan: GraspPlan; Refusal: null; Tried: PitchResult[] } | { Plan: null; Refusal: GraspRefusal; Tried: PitchResult[] };
@@ -2064,9 +2077,14 @@ export function ImpossibleRefusal(Object_: Prism, Failures: PitchResult[], Befor
       : `at ${Range(Group.Pitches)} ${Group.Why}`);
   // The code: what stopped the placements that got furthest (a pose the arm reaches that does not fit between the jaws
   // says more than the poses it does not reach).
+  // Too wide: every pose the arm reaches fails on the fit itself (it does not go between the open jaws, or the fixed pad
+  // does not face it there), whatever the rest did.
   const Furthest = Math.max(...Failed.map(Item => Item.Stage));
+  const Reached = Failed.filter(Item => Item.Stage >= 1);
+  const Fit = (Item: Extract<PitchResult, { Ok: false }>) => Item.Stage <= 2 && (KindOf(Item) === "wide" || /fixed pad would face it/.test(Item.Why));
   const Kinds = new Set(Failed.filter(Item => Item.Stage === Furthest).map(KindOf));
-  const Code: GraspRefusalCode = Kinds.has("collision") ? "path" : Kinds.size === 1 && Kinds.has("reach") ? "reach"
+  const Code: GraspRefusalCode = Reached.length && Reached.every(Fit) ? "wide"
+    : Kinds.has("collision") ? "path" : Kinds.size === 1 && Kinds.has("reach") ? "reach"
     : Kinds.has("neighbour") ? "neighbour" : Kinds.size === 1 && Kinds.has("wide") ? "wide" : "path";
   const Advice = Before.Code === Code ? Before.Advice
     : Code === "path" ? `Move the ${Object_.Label} farther from the basket and the robot's body (or closer to the arm), then send the task again.`
@@ -2076,6 +2094,8 @@ export function ImpossibleRefusal(Object_: Prism, Failures: PitchResult[], Befor
   const Text = `no grasp is physically possible from here: every wrist pitch and grasp height tried (best effort, every grip that may slip allowed) is blocked: ${Parts_.slice(0, 3).join("; ")}`;
   // The camera's own check (the way to the grasp through space it has not observed) stands first, as the strict passes said it.
   if (/depth camera has not observed/.test(Before.Text)) return { ...Before, Text: `${Before.Text}; and ${Text}` };
+  // Too wide, as the strict passes measured it (its size and how far the moving jaw would have to close): their words first.
+  if (Code === "wide" && Before.Code === "wide") return { ...Before, Text: `${Before.Text}; best effort too, ${Text.replace(/^no grasp is physically possible from here: /, "")}` };
   return { Code, Text,
     Advice, ...(Code === Before.Code && Before.CloserCm !== undefined ? { CloserCm: Before.CloserCm } : {}), ...(Before.GapCm != null ? { GapCm: Before.GapCm } : {}) };
 }

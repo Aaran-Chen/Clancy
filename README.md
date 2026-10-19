@@ -1,4 +1,4 @@
-# SO-101 Inverse Kinematics GUI
+# Clancy
 
 Control stack for a 6-joint **SO-101 / LeRobot SO-100** robotic arm. A browser UI
 drives the arm either by hand (per-joint sliders, XYZ target) or by chatting with
@@ -8,20 +8,19 @@ a local AI model that proposes motions you approve before anything moves.
 
 Clancy is a whole XLeRobot: an SO-101 arm on a cart with an Orbbec depth camera, driven by a local Ollama vision model
 through the web app and the Python bridge below. This repository is code only. Images, recorded and measured data
-(camera calibration, the saved home pose, servo backups, recorded poses and replay fixtures) and the generated meshes
-are left out, so a fresh clone needs these before the app builds and the bridge starts:
+(camera calibration, servo backups, recorded poses and replay fixtures) and the generated display meshes are left out.
+The collision surfaces and a home pose are included, so the app builds and the bridge starts from a fresh clone. Before
+using it on your own arm:
 
-1. The meshes and collision surfaces, rebuilt by the scripts in `Cad/` (see `Cad/ReadMe.md`), from the repository root:
-   `pip install -r Cad/Requirements.txt`, then `python Cad/FetchSources.py` (downloads the pinned SO-ARM100 files to
-   `~/Downloads/SO101Cad`), `python Cad/PrepareGuiAssets.py` (`SO101Parts.glb`), a clone of
-   [Vector-Wangel/XLeRobot](https://github.com/Vector-Wangel/XLeRobot) at `../XLeRobot-main` and
-   `python Cad/PrepareXLeRobotAssets.py` (`XLeRobotBody.glb`), and last `python Cad/PrepareCollisionModel.py`
-   (`back end/BasketSurface.json` and `back end/RobotBodySurface.json`).
-2. `back end/home_preset.json`, the saved home pose in raw servo steps, which the app's build reads. Placeholders
-   let it build: `{"shoulder_pan": 2048, "shoulder_lift": 2048, "elbow_flex": 2048, "wrist_flex": 2048, "wrist_roll": 2048, "gripper": 2048}`.
-   They are not a pose for your arm: put the arm in its home pose and press **Set Home** (which rewrites the file)
+1. **Set your own Home.** `back end/home_preset.json` is the home pose of the arm this was built on, in raw servo
+   steps. It is not a pose for your arm: put your arm in its home pose and press **Set Home** (which rewrites the file)
    before you ever press **Home**.
-3. Your own camera calibration (`back end/camera_calibration.json`), made with the app's calibration.
+2. **Calibrate your camera** (`back end/camera_calibration.json`) with the app's calibration.
+3. **Rebuild the display meshes** for the 3D view with the scripts in `Cad/` (see `Cad/ReadMe.md`), from the
+   repository root: `pip install -r Cad/Requirements.txt`, then `python Cad/FetchSources.py` (downloads the pinned
+   SO-ARM100 files to `~/Downloads/SO101Cad`), `python Cad/PrepareGuiAssets.py` (`SO101Parts.glb`), and with a clone of
+   [Vector-Wangel/XLeRobot](https://github.com/Vector-Wangel/XLeRobot) at `../XLeRobot-main`,
+   `python Cad/PrepareXLeRobotAssets.py` (`XLeRobotBody.glb`).
 
 The replay tests that read recorded frames (`back end/TestFixtures/`, `back end/captures/`) report them missing.
 

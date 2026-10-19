@@ -501,7 +501,7 @@ try {
   Asked = Completions.length;
   Clicked = Date.now();
   await Submit("Grab the box");
-  await WaitFor(async () => /is not graspable by this gripper: it measured 12\.0 x 12\.0 cm; .*close 14\.3 cm/.test(await Reply.innerText()), "a box too wide for the jaws stops the task");
+  await WaitFor(async () => /is not graspable by this gripper: it measured 12\.0 x 12\.0 cm; .*close 14\.\d cm/.test(await Reply.innerText()), "a box too wide for the jaws stops the task");
   Assert.equal(Completions.length, Asked, "No model call for an object the gripper certainly cannot grasp");
   Assert.equal(await Page.locator(".ai-task-strip").count(), 0);
   Assert.ok(Events.some(Event => Event.type === "grasp_plan" && Event.At >= Clicked && Event.code === "wide"), "The refusal is recorded");

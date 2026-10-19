@@ -269,6 +269,20 @@ Test('the best-effort pass plans what only predicts a failed grip, warned; what 
   Assert.match(Reach(Bottle).Text, /BLOCKED|OUT OF REACH/);
 });
 
+Test('a box wider than the jaws span fully open is refused as too wide at either wrist roll, never planned at its rim', () => {
+  // TestAiTaskSafetyUi's 12 x 12 cm box. With Aaran's saved Home (wrist roll 1590, not the pinned 1513) the best-effort pass
+  // of 2026-10-18 planned it at 0.6 cm under its top: the tilted jaws "met" a sliver of its rim past the finger tips.
+  const Box = Obj('box', -5, 35, -2.3, 4.7, [12, 12]);
+  for (const Roll of [Home.wrist_roll.presentRaw, 1590]) {
+    const Servos = structuredClone(Home);
+    Object.assign(Servos.wrist_roll, { presentRaw: Roll, targetRaw: Roll });
+    const Verdict = Reach(Box, [], Servos);
+    Assert.equal(Verdict.Kind, 'ungraspable', `roll ${Roll}: ${Verdict.Text}`);
+    Assert.equal(Verdict.Refusal.Code, 'wide', Verdict.Text);
+    Assert.match(Verdict.Text, /it measured 12\.0 x 12\.0 cm; .*more than the 11\.\d cm the moving jaw reaches across from the fixed pad fully open/);
+  }
+});
+
 // --- 6. The printed points ---------------------------------------------------------------
 
 Test('the printed grasp and hover points are the ones checked: the snap takes them as they are, and the floor and basket allow them', () => {
