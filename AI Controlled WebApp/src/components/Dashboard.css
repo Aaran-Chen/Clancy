@@ -1,0 +1,307 @@
+.app-shell.dashboard-app { min-width: 0; }
+.dashboard-layout { display: flex; min-width: 0; min-height: 0; overflow: hidden; }
+.mode-rail { display: flex; flex: 0 0 74px; flex-direction: column; align-items: stretch; gap: 8px; padding: 18px 7px 10px; border-right: 1px solid #32322e; background: linear-gradient(180deg, #23241f, #171917); }
+.mode-rail-label { margin-bottom: 6px; color: #aaa58e; font: 9px var(--font); letter-spacing: 2px; text-align: center; }
+.mode-rail button { display: flex; flex-direction: column; align-items: center; gap: 7px; width: 100%; padding: 12px 3px; border: 1px solid transparent; border-radius: 2px; color: #a5a69d; background: transparent; cursor: pointer; font-size: 11px; }
+.mode-rail button:hover { background: #ffffff08; color: #eee8d6; }
+.mode-rail button.active { color: #ffd291; border-color: #73613e; background: #51442b60; box-shadow: inset 2px 0 #e5b467; }
+.mode-rail button:focus-visible, .section-toggle:focus-visible { outline: 2px solid #deb66c; outline-offset: -2px; }
+.mode-rail-bottom { margin-top: auto; padding-top: 20px; }
+.dashboard-columns-scroll { flex: 1; min-width: 0; height: 100%; overflow-x: auto; overflow-y: hidden; }
+.dashboard-layout .workspace { height: 100%; width: 100%; }
+.dashboard-layout .scene-column { min-width: 0; }
+.dashboard-layout .scene-toolbar { padding: 0 10px; gap: 5px; }
+.dashboard-layout .scene-toolbar .compact-group { gap: 4px; flex-shrink: 0; }
+.dashboard-layout .scene-toolbar .chip-button { padding: 0 5px; font-size: 11px; }
+.dashboard-layout .scene-toolbar strong { font-size: 12px; }
+.dashboard-layout .scene-toolbar > div:first-child span { font-size: 11px; }
+.dashboard-divider { position: relative; z-index: 5; height: 100%; outline: none; border: 0; background: #242622; cursor: col-resize; touch-action: none; user-select: none; }
+.dashboard-divider::before { position: absolute; content: ""; inset: 0 2px; background: #55584a; opacity: .3; }
+.dashboard-divider > span { position: absolute; height: 44px; width: 3px; left: 2px; top: calc(50% - 22px); border-radius: 2px; background: #828577; }
+.dashboard-divider:hover, .dashboard-divider:focus-visible { background: #b08c484a; }
+.dashboard-divider:hover > span, .dashboard-divider:focus-visible > span { background: #edbf76; }
+.dashboard-layout[data-resizing="true"], .dashboard-layout[data-resizing="true"] * { cursor: col-resize !important; user-select: none !important; }
+.dashboard-layout [hidden] { display: none !important; }
+.dashboard-section { flex: 0 0 auto; overflow: hidden; min-width: 0; }
+.dashboard-section > .panel-heading { gap: 8px; min-height: 43px; padding: 0 11px; }
+.section-toggle { display: inline-flex; align-items: center; gap: 6px; align-self: stretch; min-width: 0; padding: 0; color: var(--text); background: transparent; cursor: pointer; text-align: left; }
+.section-toggle svg { flex-shrink: 0; color: #92998c; }
+.section-toggle span { white-space: nowrap; font-size: 12px; }
+.dashboard-section .panel-heading > small { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
+.dashboard-section .panel-heading > .cal-open-button { flex-shrink: 0; margin-left: auto; font-size: 11px; }
+.dashboard-section[data-minimized="true"] > .panel-heading { border-bottom: 0; }
+.dashboard-layout .live-feed-box { padding: 12px; }
+.dashboard-layout .video-frame { min-height: 120px; }
+.camera-panel .camera-note { margin: 0; color: var(--muted); font-size: 11px; }
+.dashboard-section.safety-panel { padding: 0; }
+.dashboard-section.safety-panel .dashboard-section-content { padding: 0 14px 10px; }
+.dashboard-app .topbar { gap: 10px; }
+.topbar-actions .topbar-emergency { width: auto; min-height: 32px; margin: 0; padding: 0 10px; font-size: 11px; }
+.ai-statistics { display: grid; gap: 13px; padding: 13px; color: var(--muted); }
+.ai-model-stat { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ai-model-stat strong { overflow-wrap: anywhere; color: #e8dfc8; font-size: 12px; font-weight: 500; }
+.ai-model-stat span { font-size: 11px; }
+.ai-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ai-stat-tile { display: grid; gap: 3px; min-width: 0; padding: 9px; border: 1px solid var(--line); border-radius: 2px; background: #101310; }
+.ai-stat-tile span { font-size: 11px; }
+.ai-stat-tile strong { color: #e5bd7e; font: 19px var(--font); font-variant-numeric: tabular-nums; }
+.ai-stat-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 7px; font-size: 11px; }
+.ai-statistics p { margin: 0; font-size: 11px; color: #9ca294; }
+.ai-context-meter { display: grid; gap: 5px; font-size: 11px; }
+.ai-context-meter progress { width: 100%; height: 5px; accent-color: #dcb775; }
+@media (max-width: 1000px) {
+  .dashboard-app .topbar { padding: 0 10px; }
+  .dashboard-app .brand h1 { font-size: 12px; }
+  .dashboard-app .topbar-actions { gap: 5px; }
+  .dashboard-app .connection-pill { padding: 0 5px; }
+  .dashboard-app .port-select { max-width: 110px; }
+}
+
+/* ---- Fit the window: no page or panel scrolling. ----
+   Each panel column is a size container. Its sections share the column's height:
+   they take their natural height, the AI reply and the selected joint's dial give
+   up space first, and the panels compact as the column gets shorter. A column
+   whose content still overflows takes the next denser step anyway (FitColumn
+   sets --fit-dense and --fit-compact on it), so heavy content compacts before
+   anything shrinks. Only if the densest step still overflows does
+   DashboardLayout scale the column's panels down; the column scrolls only below
+   that scale's floor.
+   This file loads before styles.css and ArcadeHud.css, so its rules lead with
+   ".dashboard-app .dashboard-layout" to outrank theirs. */
+.dashboard-app .dashboard-layout .slider-column,
+.dashboard-app .dashboard-layout .control-column { display: block; min-width: 0; padding: 0; border: 0; overflow: auto; container: panel-column / size; }
+.dashboard-app .dashboard-layout .column-fit { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 0; padding: 12px; }
+.dashboard-app .dashboard-layout .column-fit > .ai-column { display: flex; flex-direction: column; gap: 12px; padding: 0; border: 0; overflow: visible; background: none; }
+.dashboard-app .dashboard-layout .dashboard-section { display: flex; flex-direction: column; flex: none; min-height: 0; container: panel / inline-size; }
+.dashboard-app .dashboard-layout .dashboard-section > .panel-heading { flex: none; }
+.dashboard-app .dashboard-layout .dashboard-section > .dashboard-section-content { flex: 0 1 auto; min-height: 0; }
+
+/* AI mode: the conversation and its approval card on the left, Current Position,
+   Motion and the statistics beside it. */
+.dashboard-app .dashboard-layout[data-mode="Ai"] .control-column > .column-fit {
+  display: grid; grid-template-columns: minmax(0, 1fr) clamp(236px, 36%, 330px); grid-template-rows: auto auto minmax(0, 1fr); align-items: start; column-gap: 12px; row-gap: 12px;
+}
+.dashboard-app .dashboard-layout[data-mode="Ai"] .column-fit > .ai-column { display: contents; }
+.dashboard-app .dashboard-layout[data-mode="Ai"] .column-fit [data-section="AiControl"] { grid-column: 1; grid-row: 1 / -1; align-self: stretch; }
+.dashboard-app .dashboard-layout[data-mode="Ai"] .column-fit [data-section="AiControl"][data-minimized="true"] { align-self: start; }
+.dashboard-app .dashboard-layout[data-mode="Ai"] .column-fit [data-section="CurrentPosition"] { grid-column: 2; grid-row: 1; }
+.dashboard-app .dashboard-layout[data-mode="Ai"] .column-fit [data-section="Motion"] { grid-column: 2; grid-row: 2; }
+.dashboard-app .dashboard-layout[data-mode="Ai"] .column-fit [data-section="AiStatistics"] { grid-column: 2; grid-row: 3; }
+
+/* The AI conversation: everything at its natural height except the reply, which
+   takes what is left and, when that is short, shows its start with a way to read
+   all of it (AiReply). */
+/* No gap under the heading: styles.css gives .ai-panel a 16 px gap for its old grid layout. */
+.dashboard-app .dashboard-layout .dashboard-section.ai-panel { gap: 0; padding-bottom: 0; }
+.dashboard-app .dashboard-layout .dashboard-section.ai-panel > .dashboard-section-content { display: flex; flex-direction: column; flex: 1 1 auto; gap: 12px; padding-bottom: 12px; }
+.dashboard-app .dashboard-layout .ai-panel > .dashboard-section-content > * { flex: none; }
+.dashboard-app .dashboard-layout .ai-panel .camera-gate-banner { margin: 0 14px; }
+.dashboard-app .dashboard-layout .ai-panel .ai-input-row { grid-template-columns: minmax(0, 1fr) 40px 40px; gap: 6px; padding: 0 14px; }
+.dashboard-app .dashboard-layout .ai-panel .ai-task-strip,
+.dashboard-app .dashboard-layout .ai-panel .ai-target-estimate,
+.dashboard-app .dashboard-layout .ai-panel .ai-approval-box,
+.dashboard-app .dashboard-layout .ai-panel .ai-reply { margin: 0 14px; }
+.dashboard-app .dashboard-layout .ai-panel > .dashboard-section-content > .ai-reply { flex: 0 1 auto; min-height: 62px; overflow: hidden; }
+.dashboard-app .dashboard-layout .ai-reply { grid-template-rows: minmax(0, 1fr); padding: 8px 10px 8px 8px; }
+.ai-reply-label { grid-area: 1 / 1; }
+.ai-reply-text { grid-area: 1 / 2; min-height: 0; overflow: hidden; overflow-wrap: anywhere; }
+.ai-reply[data-truncated="true"] .ai-reply-text { mask-image: linear-gradient(to bottom, #000 calc(100% - 1em), transparent); }
+.ai-reply-more { grid-area: 1 / 1; align-self: end; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 1px solid var(--lamp-line, #ffffff24); border-radius: 2px; color: var(--lamp, #a2c7fa); background: var(--lamp-wash, transparent); cursor: pointer; }
+.ai-reply-more:hover { background: var(--lamp-soft, #ffffff10); }
+.ai-reply-full { position: fixed; inset: auto; top: 76px; left: 50%; translate: -50% 0; width: min(760px, calc(100vw - 48px)); max-height: calc(100vh - 100px); margin: 0; padding: 16px 18px;
+  overflow: auto; border: 1px solid var(--hair-strong, #ffffff24); border-radius: 2px; color: var(--text, #e9ecf1); background: #191c22fa; box-shadow: 0 12px 40px #0006;
+  font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ai-reply-full::backdrop { background: #0006; }
+.ai-reply-full header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; color: var(--lamp, #c1b6ee); font-size: 12px; white-space: normal; }
+.ai-reply-full header button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border-radius: 2px; color: var(--muted); background: transparent; cursor: pointer; }
+.ai-reply-full header button:hover { background: #ffffff10; color: var(--text); }
+
+/* The joints: rows at their natural height; the selected joint's dial shrinks
+   to the space left, down to a size that still turns precisely. */
+.dashboard-app .dashboard-layout .servo-panel-card { flex: 0 1 auto; }
+.dashboard-app .dashboard-layout .servo-panel-card > .dashboard-section-content { display: flex; flex-direction: column; }
+.dashboard-app .dashboard-layout .servo-list { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; gap: 6px; padding: 10px; }
+.dashboard-app .dashboard-layout .servo-row { flex: none; padding: 8px 10px; }
+.dashboard-app .dashboard-layout .servo-row.joint-selected { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; }
+.dashboard-app .dashboard-layout .servo-row.joint-selected > * { flex: none; }
+.dashboard-app .dashboard-layout .servo-row.joint-selected > .joint-fine-control { display: flex; flex-direction: column; align-items: center; flex: 0 1 auto; min-height: 118px; }
+.dashboard-app .dashboard-layout .joint-fine-control svg { flex: 0 1 auto; width: auto; height: 210px; max-width: 100%; min-height: 0; }
+.dashboard-app .dashboard-layout .joint-fine-step { flex: none; margin-bottom: 4px; }
+
+/* Current Position, Target and Motion. */
+.dashboard-app .dashboard-layout .position-grid { padding: 10px; gap: 6px; }
+.dashboard-app .dashboard-layout .position-tile { min-height: 0; padding: 7px 9px; }
+@container panel (min-width: 220px) {
+  .dashboard-app .dashboard-layout .position-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .dashboard-app .dashboard-layout .position-tile { padding: 6px 7px; }
+  .dashboard-app .dashboard-layout .position-tile strong { font-size: 16px; }
+}
+.dashboard-app .dashboard-layout .target-grid { gap: 6px; padding: 10px 10px 8px; }
+.dashboard-app .dashboard-layout .target-grid label { gap: 3px; }
+.dashboard-app .dashboard-layout .target-grid input { height: 32px; }
+.dashboard-app .dashboard-layout .wide-field { grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 0 10px 10px; }
+.dashboard-app .dashboard-layout .wide-field input[type="number"] { height: 32px; }
+.dashboard-app .dashboard-layout [data-section="Target"] .warn-text { margin: 8px 10px 0; font-size: 12px; }
+.dashboard-app .dashboard-layout .protection-status { margin: 10px 10px 0; padding: 8px 10px; }
+.dashboard-app .dashboard-layout .bridge-update-status { margin: 10px 10px 0; padding: 9px 10px; gap: 5px; }
+.dashboard-app .dashboard-layout .motion-throttle { margin: 10px 10px 0; padding: 12px 13px 9px; }
+/* The motion buttons flow two to a row, the last one alone taking the full row, and wrap
+   rather than squeeze a label onto two lines in a narrow column. */
+.dashboard-app .dashboard-layout .button-grid { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px; }
+.dashboard-app .dashboard-layout .button-grid .action-button { flex: 1 1 40%; height: 34px; padding: 0 10px; white-space: nowrap; }
+
+/* AI statistics. */
+.dashboard-app .dashboard-layout .ai-statistics { gap: 9px; padding: 10px; }
+.dashboard-app .dashboard-layout .ai-stat-tile { padding: 7px 9px; }
+.dashboard-app .dashboard-layout .ai-stat-tile strong { font-size: 17px; }
+
+/* Shorter columns: tighter spacing, lower rows and inline labels. */
+@container panel-column (max-height: 1100px) or style(--fit-dense: 1) {
+  .dashboard-app .dashboard-layout .column-fit { gap: 10px; padding: 10px; }
+  .dashboard-app .dashboard-layout[data-mode="Ai"] .control-column > .column-fit { column-gap: 10px; row-gap: 10px; }
+  .dashboard-app .dashboard-layout .column-fit > .ai-column { gap: 10px; }
+  .dashboard-app .dashboard-layout .dashboard-section > .panel-heading { min-height: 36px; }
+  .dashboard-app .dashboard-layout .dashboard-section.ai-panel > .dashboard-section-content { gap: 9px; padding-bottom: 10px; }
+  .dashboard-app .dashboard-layout .ai-panel .ai-task-strip { padding: 6px 10px; }
+  .dashboard-app .dashboard-layout .ai-panel .ai-task-strip button { height: 24px; }
+  .dashboard-app .dashboard-layout .ai-target-estimate { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; padding: 7px 10px; }
+  .dashboard-app .dashboard-layout .ai-target-estimate > div { display: flex; flex-wrap: wrap; gap: 2px 10px; }
+  .dashboard-app .dashboard-layout .ai-approval-box { gap: 9px; padding: 10px 12px; }
+  .dashboard-app .dashboard-layout .ai-motion-copy { gap: 7px; }
+  .dashboard-app .dashboard-layout .coordinate-grid { gap: 6px; }
+  .dashboard-app .dashboard-layout .coordinate-tile { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 4px; min-height: 0; padding: 6px 9px; }
+  .dashboard-app .dashboard-layout .coordinate-tile strong { font-size: 16px; }
+  .dashboard-app .dashboard-layout .delta-row { gap: 3px; padding: 6px 9px; }
+  .dashboard-app .dashboard-layout .servo-proposal-grid { gap: 6px; }
+  .dashboard-app .dashboard-layout .servo-proposal-tile { gap: 2px; padding: 6px 9px; }
+  .dashboard-app .dashboard-layout .ai-approval-actions .action-button { height: 32px; }
+  .dashboard-app .dashboard-layout .servo-list { gap: 4px; padding: 8px; }
+  .dashboard-app .dashboard-layout .servo-row { padding: 6px 9px; }
+  .dashboard-app .dashboard-layout .slider-stack { height: 36px; margin-top: 4px; }
+  .dashboard-app .dashboard-layout .slider-stack input[type="range"] { top: 14px; height: 22px; }
+  .dashboard-app .dashboard-layout .present-marker { top: 25px; }
+  .dashboard-app .dashboard-layout .target-label { line-height: 13px; }
+  .dashboard-app .dashboard-layout .servo-meta { line-height: 1.25; }
+  .dashboard-app .dashboard-layout .joint-fine-control { padding-top: 4px; }
+  .dashboard-app .dashboard-layout .joint-fine-step { margin-bottom: 2px; }
+  .dashboard-app .dashboard-layout .joint-fine-step button { height: 26px; }
+  .dashboard-app .dashboard-layout .position-grid { padding: 8px; }
+  .dashboard-app .dashboard-layout .protection-status { margin: 8px 8px 0; padding: 6px 9px; }
+  .dashboard-app .dashboard-layout .protection-status small { line-height: 1.35; }
+  .dashboard-app .dashboard-layout .bridge-update-status { margin: 8px 8px 0; padding: 7px 9px; }
+  .dashboard-app .dashboard-layout .bridge-update-status small { line-height: 1.35; }
+  .dashboard-app .dashboard-layout .bridge-update-status button { padding: 5px 9px; }
+  .dashboard-app .dashboard-layout .motion-throttle { margin: 8px 8px 0; padding: 8px 11px 6px; }
+  .dashboard-app .dashboard-layout .throttle-heading label span { display: inline; margin: 0 0 0 6px; }
+  .dashboard-app .dashboard-layout .throttle-heading output { min-width: 62px; padding: 0 6px; font-size: 19px; }
+  .dashboard-app .dashboard-layout .throttle-fader { margin-top: 3px; }
+  .dashboard-app .dashboard-layout .motion-throttle input[type="range"] { height: 26px; }
+  .dashboard-app .dashboard-layout .throttle-scale { height: 17px; }
+  .dashboard-app .dashboard-layout .throttle-scale span { top: 5px; }
+  .dashboard-app .dashboard-layout .throttle-help { margin-top: 2px; }
+  .dashboard-app .dashboard-layout .target-grid { padding: 8px 8px 6px; }
+  .dashboard-app .dashboard-layout .wide-field { padding: 0 8px 8px; }
+  .dashboard-app .dashboard-layout .button-grid { padding: 8px; }
+  .dashboard-app .dashboard-layout .button-grid .action-button { height: 30px; }
+  .dashboard-app .dashboard-layout .ai-statistics { gap: 7px; padding: 8px 10px; }
+  .dashboard-app .dashboard-layout .ai-stat-grid { gap: 6px; }
+  .dashboard-app .dashboard-layout .ai-stat-tile { gap: 1px; padding: 5px 8px; }
+  .dashboard-app .dashboard-layout .ai-stat-tile strong { font-size: 15px; }
+  .dashboard-app .dashboard-layout .ai-statistics p { line-height: 1.35; }
+}
+@container panel-column (max-height: 1100px) or style(--fit-dense: 1) {
+  /* A wide conversation puts the proposal's heading beside its coordinates. */
+  @container panel (min-width: 430px) {
+    .dashboard-app .dashboard-layout .ai-motion-copy { grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: 12px; }
+    .dashboard-app .dashboard-layout .ai-motion-copy > * { grid-column: 1 / -1; }
+    .dashboard-app .dashboard-layout .ai-motion-copy > h2 { grid-column: 1; }
+    .dashboard-app .dashboard-layout .ai-motion-copy > .coordinate-grid { grid-column: 2; }
+  }
+  .dashboard-app .dashboard-layout .delta-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
+  .dashboard-app .dashboard-layout .delta-row > div { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 2px 12px; }
+}
+@container panel-column (max-height: 760px) or style(--fit-compact: 1) {
+  .dashboard-app .dashboard-layout .column-fit { gap: 6px; padding: 6px; }
+  .dashboard-app .dashboard-layout[data-mode="Ai"] .control-column > .column-fit { column-gap: 6px; row-gap: 6px; }
+  .dashboard-app .dashboard-layout .column-fit > .ai-column { gap: 6px; }
+  .dashboard-app .dashboard-layout .dashboard-section > .panel-heading { min-height: 30px; }
+  .dashboard-app .dashboard-layout .dashboard-section.ai-panel > .dashboard-section-content { gap: 6px; padding-bottom: 6px; }
+  .dashboard-app .dashboard-layout .ai-panel .camera-gate-banner { gap: 2px; padding: 6px 9px; }
+  .dashboard-app .dashboard-layout .ai-panel .camera-gate-banner strong,
+  .dashboard-app .dashboard-layout .ai-panel .camera-gate-banner small { line-height: 1.3; }
+  .dashboard-app .dashboard-layout .ai-panel .ai-input-row input,
+  .dashboard-app .dashboard-layout .ai-panel .ai-input-row .icon-button { height: 32px; }
+  .dashboard-app .dashboard-layout .ai-panel .ai-task-strip { padding: 4px 8px; }
+  .dashboard-app .dashboard-layout .ai-panel .ai-task-strip button { height: 22px; }
+  .dashboard-app .dashboard-layout .ai-target-estimate { padding: 5px 9px; }
+  .dashboard-app .dashboard-layout .ai-motion-copy { gap: 5px; line-height: 1.3; }
+  .dashboard-app .dashboard-layout .ai-approval-box { gap: 6px; padding: 7px 9px; }
+  .dashboard-app .dashboard-layout .coordinate-tile { padding: 5px 8px; }
+  .dashboard-app .dashboard-layout .delta-row,
+  .dashboard-app .dashboard-layout .servo-proposal-tile { padding: 5px 8px; }
+  .dashboard-app .dashboard-layout .ai-approval-actions .action-button { height: 30px; }
+  .dashboard-app .dashboard-layout .ai-chain-steps { gap: 1px; line-height: 1.3; }
+  .dashboard-app .dashboard-layout .ai-issue-text,
+  .dashboard-app .dashboard-layout .ai-snap-note { line-height: 1.3; }
+  .dashboard-app .dashboard-layout .ai-reply { line-height: 1.45; padding: 5px 8px 5px 6px; }
+  .dashboard-app .dashboard-layout .ai-panel > .dashboard-section-content > .ai-reply { min-height: 48px; }
+  .dashboard-app .dashboard-layout .servo-list { gap: 3px; padding: 6px; }
+  .dashboard-app .dashboard-layout .servo-row { padding: 4px 8px; }
+  .dashboard-app .dashboard-layout .slider-stack { height: 32px; margin-top: 2px; }
+  .dashboard-app .dashboard-layout .slider-stack input[type="range"] { top: 12px; height: 20px; }
+  .dashboard-app .dashboard-layout .present-marker { top: 22px; }
+  .dashboard-app .dashboard-layout .servo-header { line-height: 1.3; }
+  .dashboard-app .dashboard-layout .servo-row.joint-selected > .joint-fine-control { min-height: 112px; }
+  .dashboard-app .dashboard-layout .position-grid { gap: 4px; padding: 6px; }
+  .dashboard-app .dashboard-layout .position-tile { padding: 3px 6px; line-height: 1.2; }
+  .dashboard-app .dashboard-layout .position-tile strong { font-size: 15px; line-height: 1.15; }
+  .dashboard-app .dashboard-layout .target-grid { gap: 5px; padding: 6px 6px 5px; }
+  .dashboard-app .dashboard-layout .target-grid label { grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 4px; }
+  .dashboard-app .dashboard-layout .target-grid input,
+  .dashboard-app .dashboard-layout .wide-field input[type="number"] { height: 28px; padding: 0 4px; font-size: 12px; }
+  .dashboard-app .dashboard-layout .wide-field { gap: 6px; padding: 0 6px 6px; }
+  .dashboard-app .dashboard-layout .protection-status { margin: 6px 6px 0; padding: 5px 8px; }
+  .dashboard-app .dashboard-layout .protection-status small,
+  .dashboard-app .dashboard-layout .bridge-update-status small { line-height: 1.3; }
+  .dashboard-app .dashboard-layout .bridge-update-status { gap: 3px; margin: 6px 6px 0; padding: 6px 8px; }
+  .dashboard-app .dashboard-layout .bridge-update-status strong { line-height: 1.35; }
+  .dashboard-app .dashboard-layout .bridge-update-status button { padding: 3px 8px; }
+  .dashboard-app .dashboard-layout .motion-throttle { margin: 6px 6px 0; padding: 6px 9px 4px; }
+  .dashboard-app .dashboard-layout .throttle-heading label span { letter-spacing: .04em; }
+  .dashboard-app .dashboard-layout .throttle-heading output { min-width: 54px; font-size: 17px; }
+  .dashboard-app .dashboard-layout .motion-throttle input[type="range"] { height: 22px; }
+  .dashboard-app .dashboard-layout .throttle-scale { height: 14px; }
+  .dashboard-app .dashboard-layout .throttle-scale span { top: 3px; }
+  .dashboard-app .dashboard-layout .throttle-help { line-height: 1.3; }
+  /* As many motion buttons to a row as fit: two rows for all five. */
+  .dashboard-app .dashboard-layout .button-grid { gap: 4px; padding: 6px; }
+  .dashboard-app .dashboard-layout .button-grid .action-button { flex: 1 1 auto; height: 28px; padding: 0 8px; gap: 6px; }
+  .dashboard-app .dashboard-layout .dashboard-section > .dashboard-section-content { padding-bottom: 0; }
+  .dashboard-app .dashboard-layout .ai-statistics { gap: 5px; padding: 6px 9px; }
+  .dashboard-app .dashboard-layout .ai-model-stat { flex-flow: row wrap; align-items: baseline; justify-content: space-between; gap: 0 8px; }
+  .dashboard-app .dashboard-layout .ai-stat-grid { gap: 4px; }
+  .dashboard-app .dashboard-layout .ai-stat-tile { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 6px; padding: 3px 7px; }
+  .dashboard-app .dashboard-layout .ai-stat-tile strong { font-size: 14px; }
+  .dashboard-app .dashboard-layout .ai-context-meter { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; }
+  .dashboard-app .dashboard-layout .ai-context-meter progress { flex: 1 1 60px; width: auto; }
+  .dashboard-app .dashboard-layout .ai-statistics p { line-height: 1.3; }
+}
+/* The tightest step, only for content the compact step still cannot fit (a very
+   short window, such as browser zoom on a laptop-height screen): help text and
+   the assistant's name go, and the assistant's card, the headings and the
+   inputs and buttons get lower.
+   FitColumn sets --fit-tight before it would scale anything down. */
+@container panel-column style(--fit-tight: 1) {
+  .dashboard-app .dashboard-layout .dashboard-section > .panel-heading { min-height: 27px; }
+  .dashboard-app .dashboard-layout .ai-statistics > p { display: none; }
+  .dashboard-app .dashboard-layout .ai-companion { gap: 10px; margin: 6px 14px 0; padding: 7px 10px; }
+  .dashboard-app .dashboard-layout .ai-companion-portrait { flex-basis: 50px; width: 50px; height: 50px; }
+  .dashboard-app .dashboard-layout .ai-companion-name { display: none; }
+  .dashboard-app .dashboard-layout .ai-companion-copy strong { font-size: 14px; }
+  .dashboard-app .dashboard-layout .ai-companion-copy p { margin-top: 2px; line-height: 1.35; }
+  .dashboard-app .dashboard-layout .throttle-help { margin-top: 0; }
+  .dashboard-app .dashboard-layout .motion-throttle { padding: 5px 9px 3px; }
+  .dashboard-app .dashboard-layout .target-grid input,
+  .dashboard-app .dashboard-layout .wide-field input[type="number"] { height: 26px; }
+  .dashboard-app .dashboard-layout .button-grid .action-button { height: 26px; }
+}

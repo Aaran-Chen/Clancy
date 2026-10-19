@@ -1,0 +1,22 @@
+Clancy
+Copyright 2026 Aaran Chen
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes or derives from the following third-party work:
+
+SO-ARM100 (SO-101 follower CAD, URDF and joint geometry)
+  by TheRobotStudio and contributors, https://github.com/TheRobotStudio/SO-ARM100
+  source commit eecbe3e0a9ebb23e25ad7b2759b03884c6660903
+  Apache License 2.0 (AI Controlled WebApp/public/Cad/LICENSE.txt)
+
+XLeRobot (cart, mast and camera head geometry)
+  by Vector-Wangel and contributors, https://github.com/Vector-Wangel/XLeRobot
+  Apache License 2.0 (AI Controlled WebApp/public/Cad/XLeRobotLicense.txt)
+
+Play font
+  by Jonas Hecksher, Playtypes, e-types AS, installed from npm (@fontsource/play)
+  SIL Open Font License 1.1 (AI Controlled WebApp/public/Fonts/Play-LICENSE.txt)
+
+back end/feetech_simple.py follows the Feetech motor-bus conventions of Hugging Face LeRobot
+  (https://github.com/huggingface/lerobot), Apache License 2.0.

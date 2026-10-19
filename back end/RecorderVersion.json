@@ -1,0 +1,4 @@
+{
+  "Version": "task-video-v2",
+  "Note": "The session recorder's contract with the dev server. Bump Version whenever SessionRecorder.py changes what it records or the requests it takes. The recorder reports it (version in GET 127.0.0.1:8002/health); the dev server's launcher (vite.config.ts ensureRecorder, scripts/SessionVideo.ts) starts the current recorder with --replace-older whenever the running one reports another version (or none: the recorder before 2026-10-08 recorded around the clock), and that stops the old one first."
+}

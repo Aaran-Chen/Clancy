@@ -1,0 +1,111 @@
+{
+  "HomeDisplayPositionCm": {
+    "x": -14.929385682758067,
+    "y": 19.124221766334642,
+    "z": 8.329407523131163
+  },
+  "MinimumTipZCm": -3.13,
+  "TableZCm": -2.3,
+  "FixedAnchorVisualCm": {
+    "x": 28.899385682758066,
+    "y": 17.059221766334645
+  },
+  "CalibrationSampling": {
+    "Frame": "visual (panel) frame: X = -AI/display X, +X toward the arm's right. The X window is display X -16.9..+24.1, the desk where objects sit; ZValuesCm keep the tape 9+ cm above the desk (TableZCm). Facing keeps its own window.",
+    "XValuesCm": [
+      -22.100614317241934,
+      -18.100614317241934,
+      -14.100614317241934,
+      -10.100614317241934,
+      -6.100614317241934,
+      -2.1006143172419343,
+      2.8993856827580657,
+      6.899385682758066,
+      10.899385682758066,
+      14.899385682758066
+    ],
+    "YValuesCm": [
+      18.059221766334645,
+      22.059221766334645,
+      24.059221766334645,
+      26.059221766334645,
+      28.059221766334645,
+      30.059221766334645,
+      32.059221766334645,
+      34.059221766334645,
+      37.059221766334645,
+      40.059221766334645
+    ],
+    "ZValuesCm": [
+      7.139407523131164,
+      9.139407523131164,
+      11.139407523131164,
+      13.139407523131164,
+      15.139407523131164
+    ],
+    "WristPitchDegrees": [
+      -12,
+      8
+    ],
+    "Facing": {
+      "XValuesCm": [
+        -2.1006143172419343,
+        2.8993856827580657,
+        6.899385682758066,
+        10.899385682758066,
+        14.899385682758066,
+        18.899385682758066,
+        22.899385682758066,
+        26.899385682758066,
+        30.899385682758066,
+        34.899385682758066
+      ],
+      "MinimumXCm": -2.1006143172419343,
+      "MaximumXCm": 37.899385682758066,
+      "WristPitchDegrees": [
+        -60,
+        -40,
+        -20,
+        0
+      ],
+      "PreferredYRangeCm": [
+        34.059221766334645,
+        40.059221766334645
+      ],
+      "PreferredPoseCount": 12
+    },
+    "PoseCount": 24,
+    "MinimumSpacingCm": 2.5,
+    "PreferredYRangeCm": [
+      32.059221766334645,
+      40.059221766334645
+    ],
+    "PreferredPoseCount": 12,
+    "MinimumXCm": -24.100614317241934,
+    "MaximumXCm": 16.899385682758066,
+    "MinimumYCm": 17.059221766334645
+  },
+  "RobotFrame": {
+    "Origin": "Arm midpoint at bin rim",
+    "ControlledArm": "Right",
+    "OriginAssemblyCm": [
+      8.976569993990324e-07,
+      -9.61647,
+      77.50756576686557
+    ],
+    "ArmBasePositionCm": {
+      "x": 13.3,
+      "y": 0.0,
+      "z": 4.732434233134427
+    },
+    "PositiveY": "Robot front"
+  },
+  "BasketRedStrip": {
+    "DisplayCm": {
+      "x": -1.85,
+      "y": 20.9,
+      "z": 0.5
+    },
+    "Note": "The small red strip on the basket's far rim, display frame (cm). Fixed to the robot: its camera point measured in depth on 2026-10-10 (run 20261010_104108_026ec24b56df: -1.9, 20.47, 0.9) and 2026-10-12 (20261012_093139_eb5b289f88f3: -1.81, 21.37, 0.05), each through a camera pose fitted to that run's manual tape clicks, averaged; it reprojects within 2.4 px of the strip in both. SelfCalibration.BasketStripExclusion masks red there so it is never taken for the gripper's tape."
+  }
+}

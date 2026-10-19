@@ -1,0 +1,56 @@
+/** Screenshots of the dashboard in both modes, for design work. Nothing touches hardware. */
+import { chromium as Chromium } from "playwright";
+import { LaunchOptions, StartUiServer } from "./UiTestLib.mjs";
+import { readFileSync as ReadFile, mkdirSync as MakeDirectory } from "node:fs";
+import { execFileSync as Execute } from "node:child_process";
+import { fileURLToPath as FilePath } from "node:url";
+import Path from "node:path";
+const Root = Path.dirname(FilePath(import.meta.url)), Backend = Path.resolve(Root, "../back end");
+const Python = ReadFile(Path.join(Root, "../.backend-python.txt"), "utf8").trim();
+const State = JSON.parse(Execute(Python, ["-c", "import json, bridge_server; print(json.dumps(bridge_server.BridgeController().state_snapshot()))"], { cwd: Backend, encoding: "utf8" }));
+const Output = process.argv[2] ?? Path.join(Backend, "TestArtifacts", "Shots"); MakeDirectory(Output, { recursive: true });
+const Server = await StartUiServer();
+const Browser = await Chromium.launch(LaunchOptions());
+const Page = await Browser.newPage({ viewport: { width: 1920, height: 1080 } });
+const Timers = new Set();
+Page.on("pageerror", Error => console.log("PAGE ERROR:", Error.message));
+Page.on("console", Message => { if (Message.type() === "error") console.log("CONSOLE:", Message.text().slice(0, 160)); });
+await Page.route("**/bridge-launch/**", Route => Route.fulfill({ json: { ok: true } }));
+await Page.route("**/depth-server/**", Route => Route.fulfill({ json: {} }));
+await Page.route("**/ollama/**", async Route => {
+  const Url = new URL(Route.request().url());
+  if (Url.pathname.endsWith("/tags")) return Route.fulfill({ json: { models: [{ name: "qwen2.5vl:7b", size: 6000000000 }] } });
+  if (Url.pathname.endsWith("/show")) return Route.fulfill({ json: { capabilities: ["vision"] } });
+  if (Url.pathname.endsWith("/ps")) return Route.fulfill({ json: { models: [{ name: "qwen2.5vl:7b", context_length: 32768 }] } });
+  return Route.fulfill({ json: { data: [{ id: "qwen2.5vl:7b" }] } });
+});
+await Page.route("**:8000/**", Route => {
+  const Url = new URL(Route.request().url());
+  if (Url.pathname === "/ports") return Route.fulfill({ json: ["COM5"] });
+  if (Url.pathname === "/ik/preview") return Route.fulfill({ json: { ok: false } });
+  return Route.fulfill({ json: { ok: true, calibrated: true, points: [], point_count: 8, min_points: 4, rms_cm: 0.42, mode: "auto", has_intrinsics: true, recommended_points: 6 } });
+});
+await Page.routeWebSocket("**/ws", Socket => {
+  Socket.send(JSON.stringify(State));
+  const Timer = setInterval(() => Socket.send(JSON.stringify(State)), 200); Timers.add(Timer);
+  Socket.onClose(() => { clearInterval(Timer); Timers.delete(Timer); });
+});
+await Page.goto(Server.Url, { waitUntil: "domcontentloaded" });
+await Page.locator("canvas[data-cad-ready=true][data-assembly-ready=true]").waitFor({ timeout: 60000 });
+await Page.waitForTimeout(1200);
+await Page.screenshot({ path: Path.join(Output, "Manual.png") });
+const TargetY = Page.getByRole("spinbutton", { name: "Target Y", exact: true });
+await TargetY.fill("32"); await TargetY.press("Enter");
+await Page.waitForTimeout(700);
+await Page.locator(".cad-shell").screenshot({ path: Path.join(Output, "ManualScene.png") });
+await Page.locator(".control-column").screenshot({ path: Path.join(Output, "ManualControls.png") });
+await Page.locator(".slider-column").screenshot({ path: Path.join(Output, "ManualJoints.png") });
+await Page.getByRole("button", { name: "AI control mode", exact: true }).click();
+await Page.waitForTimeout(900);
+await Page.screenshot({ path: Path.join(Output, "Ai.png") });
+await Page.locator(".control-column").screenshot({ path: Path.join(Output, "AiControls.png") });
+await Page.getByRole("button", { name: "Manual control mode", exact: true }).click();
+await Page.waitForTimeout(500);
+for (const Timer of Timers) clearInterval(Timer);
+await Browser.close(); await Server.Close();
+console.log("shots written to", Output);

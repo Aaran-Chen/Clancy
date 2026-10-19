@@ -1,0 +1,711 @@
+{
+  "Name": "XLeRobot with IKEA RASKOG cart",
+  "Units": "cm",
+  "DefaultLiveArm": "Right",
+  "SourceRepository": "https://github.com/Vector-Wangel/XLeRobot",
+  "SourceDirectory": "../XLeRobot-main",
+  "SourceHashes": {
+    "simulation/Maniskill/assets/xlerobot/xlerobot.urdf": "73e947aa4f3636819bd039c3fcd03c625760e9ad32ccadfea05710afa6bf5578",
+    "simulation/Maniskill/assets/xlerobot/meshes/raskogbody.stl": "b208f31d48329e6c68b89a27ce25dade6a26ceeed155989b216ee4e068c702cb",
+    "simulation/Maniskill/assets/xlerobot/meshes/raskogwheel1.stl": "cb8330074b23de6aba316fb47978b9acd194a8020820255ba2c6b64350781161",
+    "simulation/Maniskill/assets/xlerobot/meshes/raskogwheel2.stl": "719d4d1ec811f54af6bdadab64dcec5411ed356d1bce691e7bf19ab685f02edf",
+    "simulation/Maniskill/assets/xlerobot/meshes/topbase1.stl": "9d8ffc8101829b061e10ce3ee312c475599936dff49f826abc93c36b3767e9da",
+    "simulation/Maniskill/assets/xlerobot/meshes/topbase2.stl": "866c172149e274ffad3fbb9a98c2dcd348eb3556a8227b73e2c0c09d9ce2bbef",
+    "simulation/Maniskill/assets/xlerobot/meshes/tophead3.stl": "117adaf328309532ff161464d8b78eaa50d1dcd0b8ade10ca2a12866080d435b",
+    "simulation/Maniskill/assets/xlerobot/meshes/tophead4.stl": "a427b70481f89f5fe41480613a8f1470e1e0ae18fd085142c0bee5cd5ad9254d",
+    "simulation/Maniskill/assets/xlerobot/meshes/tophead5.stl": "54bda4db70209c444aff603267209e6b382ec11729ec2bde38989e360cbc7985",
+    "simulation/Maniskill/assets/xlerobot/meshes/tophead6.stl": "3646936db777b61f57b6150cded1894b696e519d99071425fc3911458bb11c95",
+    "simulation/mujoco/xlerobot.xml": "ba8419c18718624dc6f85577c5bb38124160483e03808b9e8c377daf89d62b56",
+    "simulation/mujoco/assets/Base.stl": "bb8afb0303c0125f265a797625cfaf646ac214d5d2dc9c986348c415755e2a74",
+    "simulation/mujoco/assets/Base_Motor.stl": "aac4485d448eca418d2a93df3f78f449bd59b21ec1af2a579171819fd44ea576",
+    "simulation/mujoco/assets/Rotation_Pitch.stl": "4a1476f57d28d2c065bc0ede6a674cb3ebacf1193372916ef1e0ff32eeb92cf0",
+    "simulation/mujoco/assets/Rotation_Pitch_Motor.stl": "f4fbcf18d8f2e91d12a767c1679430140dce0c81ea1478cc153bfce3a162db61",
+    "simulation/mujoco/assets/Upper_Arm.stl": "d97ad37c90400fe39bb2d5ace8b4290f3d1262e13f1d4f166494421752d5f3b7",
+    "simulation/mujoco/assets/Upper_Arm_Motor.stl": "bafdb2cb9e9a884e62b5fbf15b1f706a65771da82764dbe703df128d9f34d723",
+    "simulation/mujoco/assets/Lower_Arm.stl": "a04511bc65cbb702b2d6023764de947888b06a09fbf272803f39c22724329a3e",
+    "simulation/mujoco/assets/Lower_Arm_Motor.stl": "07368fa4c50dea70e8157accee71072120c0cb374f672c85aba1d081702bc476",
+    "simulation/mujoco/assets/Wrist_Pitch_Roll.stl": "58e83ce1c8b24e1fa3a79672ea965ea4143986c81a21386dcd6da1cbcfdc94bb",
+    "simulation/mujoco/assets/Wrist_Pitch_Roll_Motor.stl": "89ac3fb1d2536fa4f7c40e7449be4b934d7d776f9cd0453c842767f980ff6c18",
+    "simulation/mujoco/assets/Fixed_Jaw_part1.stl": "a91f823092866cb519ff8b2590d6ca7ded921c70c06d64f9524fad2c244a6c62",
+    "simulation/mujoco/assets/Fixed_Jaw_part2.stl": "dd6162eb944dc700244552de36e723ba4097ccd25688f06a7413b8133f637d92",
+    "simulation/mujoco/assets/Moving_Jaw_part1.stl": "c331a7c7b7a4cdddeb894b4f72e897a2a77b549d9f2a335eea77f10a90ec8567",
+    "simulation/mujoco/assets/Moving_Jaw_part2.stl": "421a34db4d1426b1abe1f30ed73525f07674645130df94d2935b2ac2084e37e1",
+    "simulation/mujoco/assets/Moving_Jaw_part3.stl": "a0d92ac9c477f283211d3b5b925f184d7f031a2001853abfabba3c00a0a3c6b4",
+    "simulation/mujoco/assets/drive_motor_mount-v4-3.stl": "8d534c7ff7f198a2bcf92895ff6cfe0a21a09073399fbaff20a0126660000c73",
+    "simulation/mujoco/assets/base_plate_layer1-v5-1.stl": "6304da40d3ee04ec4fc36dd99e2f276febbc6e3770a14b1c2f5b674dfe0bd0f8",
+    "simulation/mujoco/assets/ST3215_Servo_Motor-v1-2.stl": "8e5026ea1322832671b8617166503104e98ba185bd5bfc3d037f96b7b4f964cf",
+    "simulation/mujoco/assets/3_8-Hex-Bore-Plastic-VersaHub-217-5828-v2-2.stl": "7444056133b953f57845df7ab21a9072126b52a000cb90c0b8b5929685f01a77",
+    "simulation/mujoco/assets/simplify_4-Omni-Directional-Wheel_Single_Body-v1-2.stl": "24ea4d76e20b8eb2b5d4a30328988007aa3be29936285f3cc254ddac6c6f5bb7",
+    "simulation/mujoco/assets/drive_motor_mount-v4-2.stl": "8d534c7ff7f198a2bcf92895ff6cfe0a21a09073399fbaff20a0126660000c73",
+    "simulation/mujoco/assets/ST3215_Servo_Motor-v1-1.stl": "8e5026ea1322832671b8617166503104e98ba185bd5bfc3d037f96b7b4f964cf",
+    "simulation/mujoco/assets/3_8-Hex-Bore-Plastic-VersaHub-217-5828-v2-1.stl": "7444056133b953f57845df7ab21a9072126b52a000cb90c0b8b5929685f01a77",
+    "simulation/mujoco/assets/simplify_4-Omni-Directional-Wheel_Single_Body-v1-1.stl": "24ea4d76e20b8eb2b5d4a30328988007aa3be29936285f3cc254ddac6c6f5bb7",
+    "simulation/mujoco/assets/drive_motor_mount-v4-1.stl": "8d534c7ff7f198a2bcf92895ff6cfe0a21a09073399fbaff20a0126660000c73",
+    "simulation/mujoco/assets/ST3215_Servo_Motor-v1.stl": "8e5026ea1322832671b8617166503104e98ba185bd5bfc3d037f96b7b4f964cf",
+    "simulation/mujoco/assets/3_8-Hex-Bore-Plastic-VersaHub-217-5828-v2.stl": "7444056133b953f57845df7ab21a9072126b52a000cb90c0b8b5929685f01a77",
+    "simulation/mujoco/assets/simplify_4-Omni-Directional-Wheel_Single_Body-v1.stl": "24ea4d76e20b8eb2b5d4a30328988007aa3be29936285f3cc254ddac6c6f5bb7",
+    "simulation/mujoco/assets/servo_controller_mount-v1.stl": "96060e7f2955d8de214c27ced55140ff9e340aeb448196b76bcd6263db039b6d",
+    "simulation/mujoco/assets/lipo_battery_mount-v1.stl": "496096f6faab8549c112b905ddb665c594de6f4f87b0be2ff8bb4639da4da1a0",
+    "simulation/mujoco/assets/Battery---Battery-5.2-Ah-DC5521-Plug-v2.stl": "f0cd9200f80ff3a75c8b0447eb2e80cd649a6ac86271ff5003571a9f5d94d42c",
+    "simulation/mujoco/assets/94868A713_NO-THREADS_Female-Threaded-Hex-Standoff.stl": "b488075dce6863ecb6b8d03e25b243fda1f7d3d65fae13cfd172e7f8ed686f0e",
+    "simulation/mujoco/assets/base_plate_layer2-v1.stl": "6304da40d3ee04ec4fc36dd99e2f276febbc6e3770a14b1c2f5b674dfe0bd0f8"
+  },
+  "Parts": [
+    {
+      "Name": "XLebase_link0",
+      "Material": "Cart",
+      "Category": "Cart",
+      "Source": "simulation/Maniskill/assets/xlerobot/meshes/raskogbody.stl",
+      "BoundsCm": [
+        [
+          -23.361062156999406,
+          -19.78620053100586,
+          6.134447175183033
+        ],
+        [
+          23.25321823746288,
+          19.44808657836914,
+          77.50756576686557
+        ]
+      ],
+      "Triangles": 12586
+    },
+    {
+      "Name": "XLebase_link1",
+      "Material": "Metal",
+      "Category": "Cart",
+      "Source": "simulation/Maniskill/assets/xlerobot/meshes/raskogwheel1.stl",
+      "BoundsCm": [
+        [
+          -23.291121991380116,
+          -19.59335888671875,
+          1.5029545330201843
+        ],
+        [
+          19.42411302955467,
+          19.348925354003907,
+          7.618924144220152
+        ]
+      ],
+      "Triangles": 1836
+    },
+    {
+      "Name": "XLebase_link2",
+      "Material": "Dark",
+      "Category": "Cart",
+      "Source": "simulation/Maniskill/assets/xlerobot/meshes/raskogwheel2.stl",
+      "BoundsCm": [
+        [
+          -22.817618199046347,
+          -19.217973907470704,
+          0.14857260090009872
+        ],
+        [
+          17.76378247231982,
+          18.953793823242187,
+          5.236749851431577
+        ]
+      ],
+      "Triangles": 2296
+    },
+    {
+      "Name": "XLetop_base_link0",
+      "Material": "Shell",
+      "Category": "Mast",
+      "Source": "simulation/Maniskill/assets/xlerobot/meshes/topbase1.stl",
+      "BoundsCm": [
+        [
+          -19.3,
+          -22.922874450683594,
+          69.10000000000001
+        ],
+        [
+          19.5,
+          -5.4,
+          112.49488525390628
+        ]
+      ],
+      "Triangles": 2034
+    },
+    {
+      "Name": "XLetop_base_link1",
+      "Material": "Dark",
+      "Category": "Mast",
+      "Source": "simulation/Maniskill/assets/xlerobot/meshes/topbase2.stl",
+      "BoundsCm": [
+        [
+          -1.239455795288086,
+          -21.319897460937497,
+          108.05192871093752
+        ],
+        [
+          1.2545909404754638,
+          -16.788449096679685,
+          111.65280761718752
+        ]
+      ],
+      "Triangles": 1664
+    },
+    {
+      "Name": "XLehead_pan_link0",
+      "Material": "Shell",
+      "Category": "Head",
+      "Source": "simulation/Maniskill/assets/xlerobot/meshes/tophead3.stl",
+      "BoundsCm": [
+        [
+          -2.872125625610352,
+          -19.019845581054685,
+          106.88161621093751
+        ],
+        [
+          2.643150520324707,
+          -12.674652099609373,
+          115.31966552734376
+        ]
+      ],
+      "Triangles": 3176
+    },
+    {
+      "Name": "XLehead_pan_link1",
+      "Material": "Dark",
+      "Category": "Head",
+      "Source": "simulation/Maniskill/assets/xlerobot/meshes/tophead4.stl",
+      "BoundsCm": [
+        [
+          -2.0937000274658204,
+          -15.95917510986328,
+          113.4174072265625
+        ],
+        [
+          1.4880324363708497,
+          -13.437782287597654,
+          117.94776611328126
+        ]
+      ],
+      "Triangles": 2384
+    },
+    {
+      "Name": "XLehead_tilt_link0",
+      "Material": "Shell",
+      "Category": "Head",
+      "Source": "simulation/Maniskill/assets/xlerobot/meshes/tophead5.stl",
+      "BoundsCm": [
+        [
+          -3.4156059265136722,
+          -15.935048828125002,
+          115.70899658203125
+        ],
+        [
+          2.945088195800781,
+          -13.448970947265625,
+          120.4358642578125
+        ]
+      ],
+      "Triangles": 1400
+    },
+    {
+      "Name": "XLehead_tilt_link1",
+      "Material": "Dark",
+      "Category": "Head",
+      "Source": "simulation/Maniskill/assets/xlerobot/meshes/tophead6.stl",
+      "BoundsCm": [
+        [
+          -5.197607803344726,
+          -13.525512084960939,
+          118.37821044921874
+        ],
+        [
+          4.68120231628418,
+          -11.43644958496094,
+          120.69300537109375
+        ]
+      ],
+      "Triangles": 6266
+    },
+    {
+      "Name": "XLeDrive1",
+      "Material": "Dark",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#base_plate_layer1-v5-1_geom",
+      "BoundsCm": [
+        [
+          -10.793516181054839,
+          -10.793514575977898,
+          2.7999999891966527
+        ],
+        [
+          10.500009458895327,
+          10.79351452334097,
+          3.500000010803339
+        ]
+      ],
+      "Triangles": 5804
+    },
+    {
+      "Name": "XLeDrive2",
+      "Material": "Dark",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#drive_motor_mount-v4-3_geom",
+      "BoundsCm": [
+        [
+          7.29998670516308,
+          -3.6110393314809732,
+          3.499999977630508
+        ],
+        [
+          10.699998065998964,
+          -0.5110267540967374,
+          4.466000006400833
+        ]
+      ],
+      "Triangles": 884
+    },
+    {
+      "Name": "XLeDrive3",
+      "Material": "Dark",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#ST3215_Servo_Motor-v1-2_geom",
+      "BoundsCm": [
+        [
+          7.139998854077977,
+          -3.5112017928282233,
+          3.8998295860274736
+        ],
+        [
+          10.92000356128697,
+          1.0111391828724088,
+          6.372170388746833
+        ]
+      ],
+      "Triangles": 16554
+    },
+    {
+      "Name": "XLeDrive4",
+      "Material": "Metal",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#3_8-Hex-Bore-Plastic-VersaHub-217-5828-v2-2_geom",
+      "BoundsCm": [
+        [
+          10.919990293120179,
+          -2.6728237723960673,
+          2.3428583636263083
+        ],
+        [
+          12.020005148973073,
+          2.79221956369582,
+          7.929099921820483
+        ]
+      ],
+      "Triangles": 11478
+    },
+    {
+      "Name": "XLeDrive5",
+      "Material": "Rubber",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#4-Omni-Directional-Wheel_Single_Body-v1-2_geom",
+      "BoundsCm": [
+        [
+          10.883567257385982,
+          -5.07978565477444,
+          0.056265016042553184
+        ],
+        [
+          14.766584622767187,
+          5.079684403980548,
+          10.215735068740557
+        ]
+      ],
+      "Triangles": 78560
+    },
+    {
+      "Name": "XLeDrive6",
+      "Material": "Dark",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#drive_motor_mount-v4-2_geom",
+      "BoundsCm": [
+        [
+          -4.90742601326067,
+          6.577497244770225,
+          3.4999999776305066
+        ],
+        [
+          -0.5227523854018843,
+          11.071980007172744,
+          4.466000006400833
+        ]
+      ],
+      "Triangles": 884
+    },
+    {
+      "Name": "XLeDrive7",
+      "Material": "Dark",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#ST3215_Servo_Motor-v1-1_geom",
+      "BoundsCm": [
+        [
+          -6.321350977059047,
+          5.830435403425657,
+          3.8998295860274714
+        ],
+        [
+          -0.7595220790239273,
+          11.031380117395203,
+          6.372170388746828
+        ]
+      ],
+      "Triangles": 16554
+    },
+    {
+      "Name": "XLeDrive8",
+      "Material": "Metal",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#3_8-Hex-Bore-Plastic-VersaHub-217-5828-v2-1_geom",
+      "BoundsCm": [
+        [
+          -7.9586171390056,
+          8.200923012106857,
+          2.3429000781795164
+        ],
+        [
+          -3.0927693063270953,
+          11.327252956945395,
+          7.929141636373689
+        ]
+      ],
+      "Triangles": 11478
+    },
+    {
+      "Name": "XLeDrive9",
+      "Material": "Rubber",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#4-Omni-Directional-Wheel_Single_Body-v1-1_geom",
+      "BoundsCm": [
+        [
+          -11.443164216370343,
+          7.352494582600344,
+          0.056265045196073754
+        ],
+        [
+          -1.4618737354121072,
+          15.000099080812573,
+          10.215735253753266
+        ]
+      ],
+      "Triangles": 78560
+    },
+    {
+      "Name": "XLeDrive10",
+      "Material": "Dark",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#drive_motor_mount-v4-1_geom",
+      "BoundsCm": [
+        [
+          -8.477245153298124,
+          -9.010950493517203,
+          3.499999977630508
+        ],
+        [
+          -4.092561238902966,
+          -4.5164605197378975,
+          4.466000006400834
+        ]
+      ],
+      "Triangles": 884
+    },
+    {
+      "Name": "XLeDrive11",
+      "Material": "Dark",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#ST3215_Servo_Motor-v1_geom",
+      "BoundsCm": [
+        [
+          -8.28346280535493,
+          -9.92689607681681,
+          3.899829586027476
+        ],
+        [
+          -2.7761404205830855,
+          -4.690894647255892,
+          6.372170388746833
+        ]
+      ],
+      "Triangles": 16554
+    },
+    {
+      "Name": "XLeDrive12",
+      "Material": "Metal",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#3_8-Hex-Bore-Plastic-VersaHub-217-5828-v2_geom",
+      "BoundsCm": [
+        [
+          -8.022840155909666,
+          -11.194672874269257,
+          2.3437402127662232
+        ],
+        [
+          -3.0521227671012046,
+          -8.071375840906839,
+          7.808783548919268
+        ]
+      ],
+      "Triangles": 11478
+    },
+    {
+      "Name": "XLeDrive13",
+      "Material": "Rubber",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#4-Omni-Directional-Wheel_Single_Body-v1_geom",
+      "BoundsCm": [
+        [
+          -11.405135871551256,
+          -14.929979543852701,
+          0.0562650165991857
+        ],
+        [
+          -1.420084439417408,
+          -7.285723627156246,
+          10.215735075422636
+        ]
+      ],
+      "Triangles": 78560
+    },
+    {
+      "Name": "XLeDrive14",
+      "Material": "Dark",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#servo_controller_mount-v1_geom",
+      "BoundsCm": [
+        [
+          -8.250011108966381,
+          -2.999986158405738,
+          3.4999999977830605
+        ],
+        [
+          -3.7499888909526615,
+          3.0000302368669782,
+          4.30000001249796
+        ]
+      ],
+      "Triangles": 2704
+    },
+    {
+      "Name": "XLeDrive15",
+      "Material": "Dark",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#lipo_battery_mount-v1_geom",
+      "BoundsCm": [
+        [
+          -1.100032824514576,
+          -8.950018804853062,
+          3.499999976469792
+        ],
+        [
+          5.099996092435814,
+          -1.049996090555036,
+          4.800000021223898
+        ]
+      ],
+      "Triangles": 220
+    },
+    {
+      "Name": "XLeDrive16",
+      "Material": "Dark",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#Battery---Battery-5.2-Ah-DC5521-Plug-v2_geom",
+      "BoundsCm": [
+        [
+          -0.8000313722715504,
+          -8.650017305066733,
+          3.8000000475810354
+        ],
+        [
+          5.799970592672887,
+          -1.6499973398206504,
+          7.7999999581740695
+        ]
+      ],
+      "Triangles": 1700
+    },
+    {
+      "Name": "XLeDrive17",
+      "Material": "Metal",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#94868A713_NO-THREADS_Female-Threaded-Hex-Standoff_geom",
+      "BoundsCm": [
+        [
+          -0.22500038904653163,
+          -0.25284609541848196,
+          3.499999953408181
+        ],
+        [
+          0.22500037832334074,
+          0.25284609041215667,
+          8.500000027913986
+        ]
+      ],
+      "Triangles": 1152
+    },
+    {
+      "Name": "XLeDrive18",
+      "Material": "Dark",
+      "Category": "Drive",
+      "Source": "simulation/mujoco/xlerobot.xml#base_plate_layer2-v1_geom",
+      "BoundsCm": [
+        [
+          -10.793516181054839,
+          -10.793514575977898,
+          8.49999998919665
+        ],
+        [
+          10.500009458895327,
+          10.79351452334097,
+          9.200000010803338
+        ]
+      ],
+      "Triangles": 5804
+    },
+    {
+      "Name": "XLePowerPack",
+      "Material": "Power",
+      "Category": "SchematicEquipment",
+      "Source": "Schematic placeholder",
+      "BoundsCm": [
+        [
+          -9.0,
+          -8.0,
+          22.5
+        ],
+        [
+          9.0,
+          8.0,
+          41.5
+        ]
+      ],
+      "Triangles": 12
+    },
+    {
+      "Name": "XLePowerHandle",
+      "Material": "Dark",
+      "Category": "SchematicEquipment",
+      "Source": "Schematic placeholder",
+      "BoundsCm": [
+        [
+          -0.9,
+          -5.0,
+          42.1
+        ],
+        [
+          0.9,
+          5.0,
+          43.9
+        ]
+      ],
+      "Triangles": 12
+    },
+    {
+      "Name": "XLePowerHandleLeft",
+      "Material": "Dark",
+      "Category": "SchematicEquipment",
+      "Source": "Schematic placeholder",
+      "BoundsCm": [
+        [
+          -0.9,
+          -5.0,
+          40.0
+        ],
+        [
+          0.9,
+          -3.1999999999999997,
+          43.0
+        ]
+      ],
+      "Triangles": 12
+    },
+    {
+      "Name": "XLePowerHandleRight",
+      "Material": "Dark",
+      "Category": "SchematicEquipment",
+      "Source": "Schematic placeholder",
+      "BoundsCm": [
+        [
+          -0.9,
+          3.1999999999999997,
+          40.0
+        ],
+        [
+          0.9,
+          5.0,
+          43.0
+        ]
+      ],
+      "Triangles": 12
+    },
+    {
+      "Name": "XLeComputer",
+      "Material": "Dark",
+      "Category": "SchematicEquipment",
+      "Source": "Schematic placeholder",
+      "BoundsCm": [
+        [
+          -10.0,
+          -4.5,
+          51.5
+        ],
+        [
+          -4.0,
+          4.5,
+          54.5
+        ]
+      ],
+      "Triangles": 12
+    }
+  ],
+  "Mounts": {
+    "Right": {
+      "RootCm": [
+        13.3,
+        -13.5,
+        76.0
+      ],
+      "PanCm": [
+        13.300000897657,
+        -9.61647,
+        82.24
+      ]
+    },
+    "Left": {
+      "RootCm": [
+        -13.3,
+        -13.5,
+        76.0
+      ],
+      "PanCm": [
+        -13.299999102343001,
+        -9.61647,
+        82.24
+      ]
+    }
+  },
+  "BoundsCm": [
+    [
+      -23.361062156999406,
+      -22.922874450683594,
+      0.056265016042553184
+    ],
+    [
+      23.25321823746288,
+      19.44808657836914,
+      120.69300537109375
+    ]
+  ],
+  "FloorZCm": 0.056265016042553184,
+  "ParkedUrdfRadians": {
+    "shoulder_pan": 0,
+    "shoulder_lift": -1.3,
+    "elbow_flex": 1.45,
+    "wrist_flex": 0.8,
+    "wrist_roll": 0,
+    "gripper": 0.15
+  },
+  "Note": "Body, head, cart and drive meshes come from local upstream simulation assets. SO-101 mounting is a visual adaptation. Power pack/computer are schematic. The other arm and head are parked references, not live telemetry. No IK or hardware frame changes."
+}

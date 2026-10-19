@@ -1,0 +1,267 @@
+/* ---- Synthwave -----------------------------------------------------------------
+   The app's look, loaded after ArcadeHud.css (main.tsx): chrome titles, neon
+   edges, a grid horizon with a striped sun in the empty column space. AI is a
+   purple theme (deep indigo and violet surfaces, hot magenta and sunset orange
+   as decoration); Manual is a blue theme (navy surfaces, electric blue and cyan;
+   the "Manual: blue" block at the end). The emergency stop is solid red and the
+   alarm red-orange in both, so neither is mistaken for decoration or a mode colour.
+   ManualHud.css adds the Manual controls' heads-up layout on top of this file.
+   Rules here are paint only (colours, borders already present, shadows, text
+   case and tracking on short titles), so FitColumn, the container queries and
+   the no-scroll layout measure the same boxes. Nothing animates. Every text
+   colour keeps at least the contrast it had before on its new background. */
+.dashboard-app {
+  --void: #0c0a17;
+  --panel: #151129;
+  --panel-high: #1c1735;
+  --panel-low: #110e22;
+  --glass: #100d20;
+  --hair: #a98cff1a;
+  --hair-strong: #a98cff36;
+  --text: #f1eeff;
+  --muted: #bdb4dc;
+  --dim: #a69dc8;
+  --engrave: #d4ccf2;
+  --go: #8fe3be;
+  --go-line: #8fe3be45;
+  --caution: #ffc46b;
+  --alarm: #ff8f73;
+  --surface-hover: #221c40;
+  /* Manual: blue. Text in --lamp keeps 10:1 or more on a panel; --lamp-deep is for
+     bars, edges and glows, never for text. */
+  --lamp: #a6c4ff;
+  --lamp-deep: #4f7dff;
+  --lamp-line: #7fa4ff59;
+  --lamp-soft: #6f97ff1f;
+  --lamp-wash: #6f97ff0f;
+  --lamp-ink: #0a1638;
+  --accent-hover: #c3d6ff;
+  /* Decoration only. */
+  --sw-sun: #ff9a4d;
+  --sw-pink: #f27ad6;
+  --sw-magenta: #e85ac4;
+  --sw-violet: #9a6bff;
+  --sw-cyan: #7fd8ff;
+  --sw-neon: linear-gradient(90deg, #ff9a4d99, #e85ac4b3 34%, #9a6bffb3 66%, #6f97ff99);
+  /* Chrome type: a white sky, a violet horizon just below the middle of the capitals,
+     a pale orchid and peach below it. 7.2:1 or more on a panel at its darkest. */
+  --y2k-chrome: linear-gradient(180deg, #ffffff 24%, #e2e8fb 46%, #a3a3d6 52%, #e6cdec 66%, #f6dfd2 86%);
+  --sw-grid: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 100' preserveAspectRatio='none'%3E%3Cdefs%3E%3ClinearGradient id='f' gradientUnits='userSpaceOnUse' x1='0' y1='0' x2='0' y2='100'%3E%3Cstop offset='0' stop-color='%23ff6ad5' stop-opacity='0'/%3E%3Cstop offset='.35' stop-color='%23c77dff' stop-opacity='.17'/%3E%3Cstop offset='1' stop-color='%23ff6ad5' stop-opacity='.44'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M0 100.0H400M0 64.5H400M0 47.6H400M0 37.7H400M0 31.2H400M0 26.7H400M0 23.3H400M0 20.6H400M0 18.5H400M0 16.8H400M0 15.4H400M0 14.2H400M0 13.2H400M0 12.3H400M0 11.5H400M0 10.8H400M0 10.2H400M0 9.7H400M0 9.2H400M152.0 6L0.0 25.0M154.4 6L0.0 26.3M156.8 6L0.0 27.8M159.2 6L0.0 29.4M161.6 6L0.0 31.2M164.0 6L0.0 33.3M166.4 6L0.0 35.7M168.8 6L0.0 38.5M171.2 6L0.0 41.7M173.6 6L0.0 45.5M176.0 6L0.0 50.0M178.4 6L0.0 55.6M180.8 6L0.0 62.5M183.2 6L0.0 71.4M185.6 6L0.0 83.3M188.0 6L0.0 100.0M190.4 6L40.0 100.0M192.8 6L80.0 100.0M195.2 6L120.0 100.0M197.6 6L160.0 100.0M200.0 6L200.0 100.0M202.4 6L240.0 100.0M204.8 6L280.0 100.0M207.2 6L320.0 100.0M209.6 6L360.0 100.0M212.0 6L400.0 100.0M214.4 6L400.0 83.3M216.8 6L400.0 71.4M219.2 6L400.0 62.5M221.6 6L400.0 55.6M224.0 6L400.0 50.0M226.4 6L400.0 45.5M228.8 6L400.0 41.7M231.2 6L400.0 38.5M233.6 6L400.0 35.7M236.0 6L400.0 33.3M238.4 6L400.0 31.2M240.8 6L400.0 29.4M243.2 6L400.0 27.8M245.6 6L400.0 26.3M248.0 6L400.0 25.0' fill='none' stroke='url(%23f)' stroke-width='1' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E");
+  --sw-horizon: min(32%, 240px);
+  /* The backdrop's horizon line, sun, haze and floor (Manual swaps them for blue ones). */
+  --sw-horizon-line: linear-gradient(90deg, #e85ac400 5%, #e85ac466 50%, #e85ac400 95%);
+  --sw-sun-disc: radial-gradient(circle 60px at 50% calc(100% + 18px), #f6c46b52, #f08a524d 45%, #d95cb847 86%, #d95cb800 87%);
+  --sw-haze: radial-gradient(ellipse 66% 130px at 50% calc(100% - var(--sw-horizon)), #e85ac41a, #9a6bff0f 50%, #0000 76%);
+  --sw-floor: linear-gradient(180deg, #1b103600, #1b1036b3);
+  /* The Y2K accents (focus ring, selection strips, sparkles) follow the mode colour. */
+  --y2k-cyan: var(--lamp);
+  --y2k-lilac: #b9a6ff;
+  --y2k-orchid: #e27ad0;
+  background: var(--void);
+  color: var(--text);
+}
+.dashboard-app[data-mode="Ai"] {
+  /* AI: purple. */
+  --lamp: #cab4ff;
+  --lamp-deep: #8f5bff;
+  --lamp-line: #a989ff5c;
+  --lamp-soft: #9a6bff21;
+  --lamp-wash: #9a6bff10;
+  --lamp-ink: #1d0b3d;
+  --accent-hover: #ddd0ff;
+}
+
+@media (forced-colors: none) {
+  /* Top bar: an indigo band with a soft sunset edge. */
+  .dashboard-app .topbar { background: linear-gradient(180deg, #161230, #0f0c21); border-image: var(--sw-neon) 1; box-shadow: 0 1px 10px #e85ac41a, 0 1px 0 #0006; }
+  /* Brand: a striped sun replaces the pulse glyph; the name is italic chrome. */
+  .dashboard-app .brand-mark {
+    overflow: hidden; border-color: #f27ad64d;
+    background:
+      repeating-linear-gradient(180deg, #0000 0 3px, #120d26 3px 4.2px) bottom / 100% 46% no-repeat,
+      radial-gradient(circle at 50% 108%, #f6c46b 0 22%, #f08a52 36%, #d95cb8 52%, #0000 53%) padding-box,
+      linear-gradient(180deg, #24124a, #120d26) padding-box;
+    box-shadow: inset 0 1px #ffffff12;
+  }
+  .dashboard-app .brand-mark svg { opacity: 0; }
+  @supports ((-webkit-background-clip: text) or (background-clip: text)) {
+    .dashboard-app .brand h1 { font-style: italic; background-image: linear-gradient(180deg, #ffffff 22%, #e8ecfb 46%, #9ea0d8 52%, #e2c8f0 66%, #f6d8e2 84%); }
+  }
+  .dashboard-app .brand h1 small { font-style: normal; letter-spacing: .14em; text-transform: uppercase; }
+  .dashboard-app .brand h1::before, .dashboard-app .brand h1::after { background: linear-gradient(135deg, #ffffff 22%, #a6c4ff 55%, #f2a6e4); }
+
+  /* Annunciators: tracked labels; a small LED under each lit lamp, in its own colour. */
+  .dashboard-app .annunciator b { letter-spacing: .14em; }
+  .annunciator { position: relative; }
+  .annunciator:is([data-lit="go"], [data-lit="lamp"])::after {
+    content: ""; position: absolute; left: 2px; bottom: -6px; width: 12px; height: 2px; border-radius: 1px; pointer-events: none;
+    background: var(--sw-led); box-shadow: 0 0 5px color-mix(in srgb, var(--sw-led) 50%, transparent);
+  }
+  .annunciator[data-lit="go"] { --sw-led: var(--go); }
+  .annunciator[data-lit="lamp"] { --sw-led: var(--lamp); }
+
+  /* Emergency stop: solid red, white bold capitals, a red ring. Nothing else is this red. */
+  .dashboard-app .emergency-button {
+    color: #ffffff; border-color: #ff5a6b; background: linear-gradient(180deg, #8f1426, #6f0d1d);
+    box-shadow: 0 0 0 1px #ff5a6b40, 0 0 12px #ff2d4a40, inset 0 1px #ffffff26; text-transform: uppercase; letter-spacing: .06em;
+  }
+  .dashboard-app .emergency-button:hover { background: linear-gradient(180deg, #951628, #7a0f20); }
+  .dashboard-app .annunciator[data-lit="alarm"] { background: #ff8f731a; box-shadow: inset 0 0 0 1px #ff8f7359; }
+
+  /* Mode rail: a violet column with a low sun glow; the active mode glows in its colour. */
+  .dashboard-app .mode-rail { background: radial-gradient(ellipse 190% 32% at 50% 103%, #d95cb81f, #9a6bff12 50%, #0000 75%), linear-gradient(180deg, #120e25, #0d0a1a); border-color: #9a6bff24; }
+  .dashboard-app .mode-rail-label { letter-spacing: .24em; }
+  .dashboard-app .mode-rail button.active { box-shadow: 0 0 12px -5px var(--lamp-deep), inset 0 1px #ffffff0e; }
+
+  /* Panels: violet glass with a faint neon top edge; uppercase chrome titles. */
+  .dashboard-app .dashboard-section {
+    border-color: #9a6bff29;
+    background: linear-gradient(180deg, #9a6bff0d, #0000 90px), var(--panel);
+    box-shadow: inset 0 1px #f27ad62e, 0 8px 22px #0004;
+  }
+  .dashboard-app .dashboard-section > .panel-heading,
+  .dashboard-app .settings-heading { border-image: linear-gradient(90deg, color-mix(in srgb, var(--lamp-deep) 55%, transparent), #9a6bff40 40%, #e85ac42e 70%, var(--hair)) 1; }
+  .dashboard-app .section-toggle span { text-transform: uppercase; letter-spacing: .12em; font-size: 12px; }
+  .dashboard-app .scene-toolbar { background: linear-gradient(180deg, #120e25, var(--void)); border-image: var(--sw-neon) 1; }
+  .dashboard-app .scene-toolbar strong { text-transform: uppercase; letter-spacing: .14em; font-size: 12px; }
+
+  /* Tiles, inputs and buttons: violet hairlines; hover and focus in the mode colour. */
+  .dashboard-app :is(.position-tile, .coordinate-tile, .ai-stat-tile, .servo-proposal-tile) { border-color: #9a6bff29; background: linear-gradient(180deg, #9a6bff0a, #0000), var(--glass); }
+  .dashboard-app :is(.target-grid input, .wide-field input[type="number"], .ai-input-row input, .settings-select select, .port-select) { border-color: #9a6bff40; background: #0e0b1e; }
+  .dashboard-app :is(.chip-button, .icon-button, .action-button, .cal-open-button, .settings-reset, .cal-actions button, .ai-task-strip button) { border-color: #9a6bff40; background: #9a6bff0a; }
+  .dashboard-app .action-button.danger { color: var(--alarm); border-color: #ff8f7347; background: #ff8f730a; }
+  .dashboard-app .action-button.primary {
+    color: var(--lamp-ink); border-color: transparent;
+    background: linear-gradient(180deg, #ffffff4d, #ffffff12 48%, #0000 52%), linear-gradient(90deg, var(--lamp), color-mix(in srgb, var(--lamp) 78%, #ffffff));
+    box-shadow: 0 0 12px -4px var(--lamp-deep), 0 3px 10px -6px #e85ac499, inset 0 1px #ffffff99;
+  }
+  .dashboard-app .action-button.primary:hover:not(:disabled) { background: linear-gradient(180deg, #ffffff59, #ffffff17 48%, #0000 52%), var(--accent-hover); }
+  .dashboard-app .action-button.primary:active:not(:disabled) { background: linear-gradient(180deg, #0000001f, #ffffff1f), var(--lamp); }
+  .dashboard-app .action-button.primary:disabled { box-shadow: inset 0 1px #ffffff66; }
+  .dashboard-app .action-button.primary:focus-visible { box-shadow: 0 0 12px -4px var(--lamp-deep), inset 0 1px #ffffff99, 0 0 8px 4px #b9a6ff3d; }
+
+  /* The AI panel: the companion card and the approval glow in purple; Clancy's tile is untouched. */
+  .dashboard-app .ai-companion { border-color: var(--lamp-line); background: linear-gradient(125deg, #9a6bff1f, #e85ac40a 60%, #0000), var(--panel-low); box-shadow: inset 0 1px #f27ad624; }
+  .dashboard-app .ai-approval-box.ready { box-shadow: 0 0 16px -9px var(--lamp-deep); }
+  .dashboard-app .ai-reply { border-left-color: color-mix(in srgb, var(--lamp-deep) 70%, transparent); background: var(--lamp-wash); }
+  .dashboard-app .ai-task-strip { border-color: var(--lamp-line); }
+  .dashboard-app .motion-throttle { border-color: #9a6bff29; background: linear-gradient(150deg, var(--lamp-wash), #e85ac405); }
+  .dashboard-app .throttle-heading output { text-shadow: 0 0 8px color-mix(in srgb, var(--lamp-deep) 45%, transparent); }
+
+  /* Notices: violet glass with a mode-colour edge. */
+  .dashboard-app .hud-notice { background: #17122ef2; border-color: #9a6bff40; box-shadow: inset 2px 0 color-mix(in srgb, var(--lamp-deep) 80%, transparent), 0 6px 20px #0006; }
+  .dashboard-app :is(.cad-tools, .cad-selection-badge) { background: #151129ed; border-color: #9a6bff40; }
+
+  /* Drawers and dialogs. */
+  .dashboard-app :is(.settings-panel, .cal-panel) { border-color: #9a6bff40; background: var(--panel); box-shadow: 0 0 0 1px #0006, 0 12px 40px #0007; }
+  .dashboard-app .ai-reply-full { background: #151129fa; border-color: #9a6bff40; }
+
+  /* The live view keeps its pixels; its frame takes the violet chrome. */
+  .dashboard-app .camera-window.robot-call { border-color: #9a6bff47; background: #110e22; box-shadow: 0 0 0 1px #0006, 0 0 18px -8px #9a6bff80, 0 12px 40px #0008; }
+  .dashboard-app .camera-window-header { background: linear-gradient(180deg, #1c1735, #151129); border-bottom-color: #9a6bff2e; }
+
+  /* Dividers. */
+  .dashboard-app .dashboard-divider { background: var(--void); }
+
+  /* The empty column space: a grid floor receding to a horizon with a striped sun,
+     painted under the opaque panels only (never under text, the 3D view or the camera).
+     The Scan lines setting adds a faint VHS texture there. */
+  .dashboard-app .dashboard-layout :is(.slider-column, .control-column) {
+    background:
+      var(--sw-grid) center bottom / 100% var(--sw-horizon) no-repeat,
+      var(--sw-horizon-line) center calc(100% - var(--sw-horizon)) / 100% 1px no-repeat,
+      repeating-linear-gradient(180deg, #0000 0 5px, var(--void) 5px 7px) center calc(100% - var(--sw-horizon)) / 100% 22px no-repeat,
+      var(--sw-sun-disc) center calc(100% - var(--sw-horizon)) / 100% 80px no-repeat,
+      var(--sw-haze),
+      var(--sw-floor) center bottom / 100% var(--sw-horizon) no-repeat,
+      var(--void);
+  }
+  .dashboard-app[data-scanlines="true"] .dashboard-layout :is(.slider-column, .control-column) {
+    background:
+      repeating-linear-gradient(180deg, #0000 0 3px, #00000033 3px 4px) center bottom / 100% calc(var(--sw-horizon) + 90px) no-repeat,
+      var(--sw-grid) center bottom / 100% var(--sw-horizon) no-repeat,
+      var(--sw-horizon-line) center calc(100% - var(--sw-horizon)) / 100% 1px no-repeat,
+      repeating-linear-gradient(180deg, #0000 0 5px, var(--void) 5px 7px) center calc(100% - var(--sw-horizon)) / 100% 22px no-repeat,
+      var(--sw-sun-disc) center calc(100% - var(--sw-horizon)) / 100% 80px no-repeat,
+      var(--sw-haze),
+      var(--sw-floor) center bottom / 100% var(--sw-horizon) no-repeat,
+      var(--void);
+  }
+}
+
+/* ---- Manual: blue ----------------------------------------------------------------
+   The whole Manual theme in a blue family, deep navy to electric blue with cyan
+   highlights: surfaces, hairlines, headings, the top bar, the grid horizon and its
+   sun, chrome, glows and (ManualHud.css) the heads-up parts. The live arm and the
+   live position read cyan (the 3D view's Manual tones match). Status colours keep
+   their meaning: green for ready and online, amber for caution, red-orange for the
+   alarm, solid red for the emergency stop. Every text colour keeps at least the
+   contrast it had (navy surfaces no lighter than the violet ones they replace). */
+.dashboard-app[data-mode="Manual"] {
+  --void: #070b17;
+  --panel: #0b1126;
+  --panel-high: #101836;
+  --panel-low: #090f22;
+  --glass: #070e1f;
+  --hair: #4f8dff1a;
+  --hair-strong: #4f8dff36;
+  --text: #eef4ff;
+  --muted: #b4c4e2;
+  --dim: #9fb1d4;
+  --engrave: #cfdcf5;
+  --surface-hover: #121d46;
+  --lamp-deep: #3f7fff;
+  --lamp-line: #6fa0ff59;
+  --lamp-soft: #4f8dff1f;
+  --lamp-wash: #4f8dff0f;
+  --hud-live: #5fe0ff;
+  --sw-sun: #5fd8ff;
+  --sw-pink: #6fb4ff;
+  --sw-magenta: #2f8bff;
+  --sw-violet: #3f6bff;
+  --sw-cyan: #5fe0ff;
+  --sw-neon: linear-gradient(90deg, #2f5bff99, #2f8bffb3 34%, #3fb4ffb3 66%, #5fe0ff99);
+  /* Chrome: a white sky, a steel-blue horizon, pale cyan below; 7.9:1 or more on a panel at its darkest. */
+  --y2k-chrome: linear-gradient(180deg, #ffffff 24%, #e0ecff 46%, #93a9da 52%, #c8e4f8 66%, #e4f6ff 86%);
+  --y2k-lilac: #8fb4ff;
+  --y2k-orchid: #5fd8ff;
+  --sw-grid: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 100' preserveAspectRatio='none'%3E%3Cdefs%3E%3ClinearGradient id='f' gradientUnits='userSpaceOnUse' x1='0' y1='0' x2='0' y2='100'%3E%3Cstop offset='0' stop-color='%233f8bff' stop-opacity='0'/%3E%3Cstop offset='.35' stop-color='%235fc4ff' stop-opacity='.17'/%3E%3Cstop offset='1' stop-color='%233f8bff' stop-opacity='.44'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M0 100.0H400M0 64.5H400M0 47.6H400M0 37.7H400M0 31.2H400M0 26.7H400M0 23.3H400M0 20.6H400M0 18.5H400M0 16.8H400M0 15.4H400M0 14.2H400M0 13.2H400M0 12.3H400M0 11.5H400M0 10.8H400M0 10.2H400M0 9.7H400M0 9.2H400M152.0 6L0.0 25.0M154.4 6L0.0 26.3M156.8 6L0.0 27.8M159.2 6L0.0 29.4M161.6 6L0.0 31.2M164.0 6L0.0 33.3M166.4 6L0.0 35.7M168.8 6L0.0 38.5M171.2 6L0.0 41.7M173.6 6L0.0 45.5M176.0 6L0.0 50.0M178.4 6L0.0 55.6M180.8 6L0.0 62.5M183.2 6L0.0 71.4M185.6 6L0.0 83.3M188.0 6L0.0 100.0M190.4 6L40.0 100.0M192.8 6L80.0 100.0M195.2 6L120.0 100.0M197.6 6L160.0 100.0M200.0 6L200.0 100.0M202.4 6L240.0 100.0M204.8 6L280.0 100.0M207.2 6L320.0 100.0M209.6 6L360.0 100.0M212.0 6L400.0 100.0M214.4 6L400.0 83.3M216.8 6L400.0 71.4M219.2 6L400.0 62.5M221.6 6L400.0 55.6M224.0 6L400.0 50.0M226.4 6L400.0 45.5M228.8 6L400.0 41.7M231.2 6L400.0 38.5M233.6 6L400.0 35.7M236.0 6L400.0 33.3M238.4 6L400.0 31.2M240.8 6L400.0 29.4M243.2 6L400.0 27.8M245.6 6L400.0 26.3M248.0 6L400.0 25.0' fill='none' stroke='url(%23f)' stroke-width='1' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E");
+  --sw-horizon-line: linear-gradient(90deg, #3fb4ff00 5%, #3fb4ff66 50%, #3fb4ff00 95%);
+  --sw-sun-disc: radial-gradient(circle 60px at 50% calc(100% + 18px), #c8f4ff52, #5fd8ff4d 45%, #2f7bff47 86%, #2f7bff00 87%);
+  --sw-haze: radial-gradient(ellipse 66% 130px at 50% calc(100% - var(--sw-horizon)), #3fb4ff1a, #3f6bff0f 50%, #0000 76%);
+  --sw-floor: linear-gradient(180deg, #0a1a4000, #0a1a40b3);
+}
+@media (forced-colors: none) {
+  .dashboard-app[data-mode="Manual"] .topbar { background: linear-gradient(180deg, #0b112e, #080d22); box-shadow: 0 1px 10px #2f8bff1a, 0 1px 0 #0006; }
+  .dashboard-app[data-mode="Manual"] .brand-mark {
+    border-color: #5fd8ff4d;
+    background:
+      repeating-linear-gradient(180deg, #0000 0 3px, #0a1226 3px 4.2px) bottom / 100% 46% no-repeat,
+      radial-gradient(circle at 50% 108%, #c8f4ff 0 22%, #5fd8ff 36%, #2f7bff 52%, #0000 53%) padding-box,
+      linear-gradient(180deg, #10224a, #0a1226) padding-box;
+  }
+  @supports ((-webkit-background-clip: text) or (background-clip: text)) {
+    .dashboard-app[data-mode="Manual"] .brand h1 { background-image: linear-gradient(180deg, #ffffff 22%, #e6f0ff 46%, #93a9d8 52%, #c6e4f8 66%, #e2f6ff 84%); }
+  }
+  .dashboard-app[data-mode="Manual"] .brand h1::before, .dashboard-app[data-mode="Manual"] .brand h1::after { background: linear-gradient(135deg, #ffffff 22%, #a6c4ff 55%, #7fe0ff); }
+  .dashboard-app[data-mode="Manual"] .mode-rail { background: radial-gradient(ellipse 190% 32% at 50% 103%, #2f8bff1f, #3f6bff12 50%, #0000 75%), linear-gradient(180deg, #0b1228, #080d1a); border-color: #3f6bff24; }
+  .dashboard-app[data-mode="Manual"] .dashboard-section { border-color: #3f7fff29; box-shadow: inset 0 1px #5fd8ff2e, 0 8px 22px #0004; }
+  .dashboard-app[data-mode="Manual"] :is(.dashboard-section > .panel-heading, .settings-heading) { border-image: linear-gradient(90deg, color-mix(in srgb, var(--lamp-deep) 55%, transparent), #3f6bff40 40%, #5fd8ff2e 70%, var(--hair)) 1; }
+  .dashboard-app[data-mode="Manual"] .scene-toolbar { background: linear-gradient(180deg, #0b1228, var(--void)); }
+  .dashboard-app[data-mode="Manual"] :is(.position-tile, .coordinate-tile, .ai-stat-tile, .servo-proposal-tile) { border-color: #3f7fff29; background: linear-gradient(180deg, #3f7fff0a, #0000), var(--glass); }
+  .dashboard-app[data-mode="Manual"] :is(.target-grid input, .wide-field input[type="number"], .ai-input-row input, .settings-select select, .port-select) { border-color: #3f7fff40; background: #060d1c; }
+  .dashboard-app[data-mode="Manual"] :is(.chip-button, .icon-button, .action-button, .cal-open-button, .settings-reset, .cal-actions button, .ai-task-strip button) { border-color: #3f7fff40; background: #3f7fff0a; }
+  .dashboard-app[data-mode="Manual"] .hand-guide-recalibrate { border-color: #3f7fff40; }
+  .dashboard-app[data-mode="Manual"] .action-button.danger { color: var(--alarm); border-color: #ff8f7347; background: #ff8f730a; }
+  .dashboard-app[data-mode="Manual"] .action-button.primary { box-shadow: 0 0 12px -4px var(--lamp-deep), 0 3px 10px -6px #5fd8ff99, inset 0 1px #ffffff99; }
+  .dashboard-app[data-mode="Manual"] .action-button.primary:disabled { box-shadow: inset 0 1px #ffffff66; }
+  .dashboard-app[data-mode="Manual"] button:focus-visible:not(.emergency-button, .section-toggle) { box-shadow: 0 0 8px 4px #6fb8ff3d; }
+  .dashboard-app[data-mode="Manual"] .action-button.primary:focus-visible { box-shadow: 0 0 12px -4px var(--lamp-deep), inset 0 1px #ffffff99, 0 0 8px 4px #6fb8ff3d; }
+  .dashboard-app[data-mode="Manual"] .motion-throttle { border-color: #3f7fff29; background: linear-gradient(150deg, var(--lamp-wash), #5fd8ff05); }
+  .dashboard-app[data-mode="Manual"] .hud-notice { background: #0c1430f2; border-color: #3f7fff40; }
+  .dashboard-app[data-mode="Manual"] :is(.cad-tools, .cad-selection-badge) { background: #0b1126ed; border-color: #3f7fff40; }
+  .dashboard-app[data-mode="Manual"] :is(.settings-panel, .cal-panel) { border-color: #3f7fff40; }
+  .dashboard-app[data-mode="Manual"] .camera-window.robot-call { border-color: #3f7fff47; background: #090f22; box-shadow: 0 0 0 1px #0006, 0 0 18px -8px #3f7fff80, 0 12px 40px #0008; }
+  .dashboard-app[data-mode="Manual"] .camera-window-header { background: linear-gradient(180deg, #101836, #0b1126); border-bottom-color: #3f7fff2e; }
+  .dashboard-app[data-mode="Manual"] :is(.cad-live-dot, .cad-joint-dot) { background: var(--hud-live); }
+}

@@ -1,0 +1,52 @@
+.settings-panel { position: fixed; z-index: 25; top: 64px; bottom: 48px; left: 82px; display: flex; flex-direction: column; width: min(350px, calc(100vw - 96px)); border: 1px solid #57574a; border-radius: 2px; background: #1b1e1a; color: #e7e5d9; box-shadow: 8px 8px 32px #0008; }
+.settings-heading { display: flex; align-items: center; gap: 9px; flex: 0 0 48px; padding: 0 14px; border-bottom: 1px solid #373b31; color: #ecc78d; }
+.settings-heading h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.settings-heading button { display: grid; place-items: center; width: 30px; height: 30px; margin-left: auto; border-radius: 2px; background: transparent; color: #c4c9b9; cursor: pointer; }
+.settings-heading button:hover { background: #ffffff0c; }
+.settings-content { min-height: 0; overflow-y: auto; padding: 12px 14px 16px; }
+.settings-intro, .settings-note { color: #a0ab9a; font-size: 11px; line-height: 1.5; }
+.settings-intro { margin: 0 0 18px; }
+.settings-note { margin: 8px 0 0; }
+.settings-content fieldset { min-width: 0; margin: 0 0 20px; padding: 10px 0 0; border: 0; border-top: 1px solid #3a4033; }
+.settings-content legend { padding: 0 8px 0 0; color: #d9c9a9; font-size: 12px; font-weight: 600; }
+.settings-toggle { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; cursor: pointer; font-size: 12px; }
+.settings-toggle span { min-width: 0; }
+.settings-toggle small { display: block; margin-top: 2px; color: #9ba593; font-size: 11px; }
+.settings-toggle input { width: 16px; height: 16px; flex-shrink: 0; margin: 0; accent-color: #e1b872; cursor: pointer; }
+.settings-select { display: grid; gap: 7px; padding: 10px 0; font-size: 12px; }
+.settings-select select { width: 100%; height: 32px; padding: 0 8px; color: #ece8d8; background: #111510; border: 1px solid #4b5142; border-radius: 2px; }
+.settings-range { display: grid; gap: 8px; padding: 10px 0; font-size: 12px; }
+.settings-range > span { display: flex; justify-content: space-between; gap: 8px; }
+.settings-range output { color: #e3bd7c; font: 12px var(--font); }
+.settings-range input { width: 100%; margin: 0; accent-color: #e1b872; cursor: ew-resize; }
+.settings-reset { min-height: 36px; width: 100%; border: 1px solid #62664f; border-radius: 2px; background: #303527; color: #ece4cf; cursor: pointer; }
+.settings-panel button:focus-visible, .settings-panel input:focus-visible, .settings-panel select:focus-visible { outline: 2px solid #e3bd7c; outline-offset: 3px; }
+.settings-panel select:disabled { opacity: .45; cursor: not-allowed; }
+/* Shorter windows lay the settings out in columns instead of scrolling them: two
+   below 2400 px of height, three below 1200 px, four below 760 px, each control
+   kept whole, and the drawer only as tall as its columns. */
+.settings-content fieldset { break-inside: auto; }
+.settings-content legend { break-after: avoid; }
+.settings-intro, .settings-toggle, .settings-select, .settings-range, .settings-note, .settings-content .button-grid, .settings-reset { break-inside: avoid; }
+@media (max-height: 2399px) {
+  .settings-panel { width: min(700px, calc(100vw - 96px)); }
+  .app-shell.dashboard-app .settings-panel { bottom: auto; max-height: calc(100vh - 78px); }
+  .settings-content { column-count: 2; column-gap: 24px; padding-top: 8px; padding-bottom: 10px; }
+  .settings-intro { margin-bottom: 8px; }
+  .settings-content fieldset { margin-bottom: 10px; padding-top: 6px; }
+  .settings-toggle { padding: 4px 0; }
+  .settings-select, .settings-range { gap: 4px; padding: 5px 0; }
+  .settings-note { margin-top: 4px; }
+  .settings-content .button-grid { gap: 6px; padding: 6px 0; }
+  .settings-content .button-grid .action-button { height: 30px; }
+}
+@media (max-height: 1199px) {
+  .settings-panel { width: min(1010px, calc(100vw - 96px)); }
+  .settings-content { column-count: 3; }
+}
+/* A short window (1280x720, or browser zoom on a laptop-height screen): four columns. */
+@media (max-height: 759px) {
+  .settings-panel { width: min(1320px, calc(100vw - 96px)); }
+  .settings-content { column-count: 4; column-gap: 20px; }
+}
+.cad-shell [hidden] { display: none !important; }

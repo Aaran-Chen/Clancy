@@ -1,0 +1,574 @@
+/* Minimal control deck. Neutral surfaces carry the work; Y2K colour, a small
+   chrome edge and vector pixels are reserved for selection and AI identity. */
+.dashboard-app {
+  --font: "Play", "Segoe UI", sans-serif;
+  --radius-sm: 1px;
+  --radius: 2px;
+  --radius-lg: 2px;
+  --void: #111317;
+  --panel: #191c22;
+  --panel-high: #20242c;
+  --panel-low: #15181d;
+  --glass: #14171c;
+  --hair: #ffffff10;
+  --hair-strong: #ffffff24;
+  --text: #e9ecf1;
+  --muted: #a5acb9;
+  --dim: #9099a8;
+  --engrave: #c4cbd7;
+  --lamp: #a2c7fa;
+  --lamp-deep: #668abe;
+  --lamp-line: #a2c7fa4d;
+  --lamp-soft: #a2c7fa18;
+  --lamp-wash: #a2c7fa0b;
+  --lamp-glow: transparent;
+  --lamp-ink: #182334;
+  --go: #99d6b6;
+  --go-line: #99d6b645;
+  --go-glow: transparent;
+  --caution: #e6c587;
+  --alarm: #ff9299;
+  --alarm-glow: transparent;
+  --surface: var(--panel);
+  --surface-2: var(--panel-high);
+  --surface-3: var(--panel-high);
+  --surface-hover: #292e37;
+  --line: var(--hair);
+  --line-strong: var(--hair-strong);
+  --accent: var(--lamp);
+  --accent-hover: #c1d9fa;
+  --green: var(--go);
+  --amber: var(--caution);
+  font-family: var(--font);
+  grid-template-rows: 56px minmax(0, 1fr);
+  background: var(--void);
+}
+.dashboard-app[data-mode="Ai"] {
+  --lamp: #c1b6ee;
+  --lamp-deep: #9685c8;
+  --lamp-line: #c1b6ee4d;
+  --lamp-soft: #c1b6ee18;
+  --lamp-wash: #c1b6ee0b;
+  --lamp-ink: #29243a;
+  --accent-hover: #d6cdf7;
+}
+/* Never put a visual effect over the workspace, text or camera. The saved
+   scanline preference now adds a faint texture to the portrait tile only. */
+.app-shell.dashboard-app::after { content: none; }
+.dashboard-app button, .dashboard-app input, .dashboard-app select, .dashboard-app output { font-family: inherit; }
+.dashboard-app button { transition: color 140ms, border-color 140ms, background 140ms, box-shadow 140ms; }
+.dashboard-app :is(button, input, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--lamp); outline-offset: 2px;
+}
+
+/* Compact, readable chrome and controls. */
+.dashboard-app .topbar { background: #16191e; border-bottom: 1px solid var(--hair); box-shadow: 0 1px 0 #0003; }
+.dashboard-app .brand { gap: 10px; flex-shrink: 0; }
+.dashboard-app .brand-mark { width: 30px; height: 30px; border-radius: 2px; color: var(--lamp); border: 1px solid var(--lamp-line); background: var(--lamp-wash); box-shadow: inset 0 1px #ffffff12; }
+.dashboard-app .brand h1 { display: flex; align-items: baseline; gap: 12px; font-size: 17px; letter-spacing: -.025em; color: var(--text); }
+.dashboard-app .brand h1 small { font-size: 11px; font-weight: 400; letter-spacing: .03em; color: var(--dim); }
+.annunciators { display: flex; align-items: center; gap: 13px; margin-left: auto; margin-right: auto; }
+.annunciator { display: grid; gap: 2px; padding: 0 2px; color: var(--dim); line-height: 1.2; }
+.annunciator b { font-size: 11px; font-weight: 400; letter-spacing: .04em; }
+.annunciator small { font-size: 11px; }
+.annunciator[data-lit="go"] small { color: var(--go); }
+.annunciator[data-lit="lamp"] small { color: var(--lamp); }
+.annunciator[data-lit="alarm"] { padding: 5px 9px; border-radius: 2px; color: var(--alarm); background: #ff929914; }
+.dashboard-app .topbar-actions { gap: 7px; }
+.dashboard-app .connection-pill { border-radius: 2px; border: 0; background: transparent; color: var(--dim); font-size: 12px; }
+.dashboard-app .connection-pill.live { color: var(--go); background: transparent; }
+.dashboard-app .chip-button, .dashboard-app .icon-button, .dashboard-app .port-select,
+.dashboard-app .action-button, .dashboard-app .cal-open-button {
+  border-radius: var(--radius-sm); border: 1px solid var(--hair-strong); color: var(--text);
+  background: #ffffff04; box-shadow: inset 0 1px #ffffff06;
+  text-transform: none; letter-spacing: 0; font-size: 12px;
+}
+.dashboard-app .port-select { background: var(--glass); color: var(--muted); }
+.dashboard-app .chip-button:hover:not(:disabled), .dashboard-app .icon-button:hover:not(:disabled),
+.dashboard-app .action-button:hover:not(:disabled), .dashboard-app .cal-open-button:hover:not(:disabled) {
+  color: var(--lamp); border-color: var(--lamp-line); background: var(--lamp-soft);
+}
+.dashboard-app .chip-button:active:not(:disabled), .dashboard-app .icon-button:active:not(:disabled),
+.dashboard-app .action-button:active:not(:disabled) { background: var(--surface-hover); }
+.dashboard-app .action-button.primary { color: var(--lamp-ink); border-color: var(--lamp); background: var(--lamp); box-shadow: inset 0 1px #ffffff40; }
+.dashboard-app .action-button.primary:hover:not(:disabled) { color: var(--lamp-ink); background: var(--accent-hover); }
+.dashboard-app .action-button.danger { color: var(--alarm); border-color: #ff929930; background: #ff929908; }
+.dashboard-app .emergency-button { border-radius: 2px; border: 1px solid #ff929959; color: #ffd5d8; background: #602a32; font-weight: 700; letter-spacing: 0; box-shadow: inset 0 1px #ffffff0d; }
+.dashboard-app .emergency-button:hover { background: #80343d; border-color: var(--alarm); }
+
+/* The navigation is quiet until a mode is selected. */
+.dashboard-app .mode-rail { background: #16191e; border-color: var(--hair); padding-top: 20px; }
+.dashboard-app .mode-rail-label { color: var(--dim); font-size: 11px; letter-spacing: .1em; }
+.dashboard-app .mode-rail button { gap: 8px; padding: 12px 3px; border-radius: var(--radius); color: var(--muted); border: 1px solid transparent; background: transparent; font-size: 11px; letter-spacing: 0; }
+.dashboard-app .mode-rail button:hover { color: var(--text); background: #ffffff05; }
+.dashboard-app .mode-rail button.active { color: var(--lamp); border-color: var(--lamp-line); background: linear-gradient(145deg, var(--lamp-soft), var(--lamp-wash)); box-shadow: inset 2px 0 var(--lamp), inset 0 1px #ffffff0e; }
+.dashboard-app .mode-rail-bottom { display: grid; gap: 5px; }
+.dashboard-app .mode-rail .pixel-bot { width: 24px; height: 24px; }
+
+/* Panel framing and content hierarchy. */
+.dashboard-app .dashboard-layout .ai-column,
+.dashboard-app .dashboard-layout .slider-column,
+.dashboard-app .dashboard-layout .control-column { background: var(--void); }
+.dashboard-app .dashboard-section { position: relative; border: 1px solid var(--hair); border-radius: var(--radius); background: var(--panel); box-shadow: 0 2px 8px #0001, inset 0 1px #ffffff03; }
+.dashboard-app .dashboard-section > .panel-heading { min-height: 43px; padding: 0 14px; border-bottom: 1px solid var(--hair); background: #ffffff02; }
+.dashboard-app .dashboard-section[data-minimized="true"] > .panel-heading { border-bottom: 0; }
+.dashboard-app .section-toggle span { font-size: 13px; font-weight: 700; letter-spacing: 0; color: var(--text); }
+.dashboard-app .section-toggle svg { color: var(--dim); }
+.dashboard-app .dashboard-section .panel-heading > small { color: var(--muted); font-size: 11px; border: 0; padding: 0; }
+.dashboard-app .dashboard-section-content { padding-bottom: 2px; }
+.dashboard-app .position-tile, .dashboard-app .coordinate-tile,
+.dashboard-app .ai-stat-tile, .dashboard-app .servo-proposal-tile { border-radius: var(--radius-sm); border: 1px solid var(--hair); background: var(--glass); }
+.dashboard-app .position-tile span, .dashboard-app .coordinate-tile span,
+.dashboard-app .ai-stat-tile span, .dashboard-app .servo-proposal-tile span { color: var(--muted); font-size: 11px; letter-spacing: 0; }
+.dashboard-app .position-tile strong, .dashboard-app .coordinate-tile strong,
+.dashboard-app .ai-stat-tile strong, .dashboard-app .servo-proposal-tile strong { color: var(--text); font-weight: 400; font-variant-numeric: tabular-nums; text-shadow: none; }
+.dashboard-app .delta-row { border-color: var(--hair); background: transparent; }
+.dashboard-app .delta-row b, .dashboard-app .ai-target-estimate b { color: var(--lamp); font-variant-numeric: tabular-nums; }
+.dashboard-app .target-grid input, .dashboard-app .wide-field input[type="number"], .dashboard-app .ai-input-row input { border-radius: var(--radius-sm); border: 1px solid var(--hair-strong); color: var(--text); background: var(--glass); box-shadow: none; font-variant-numeric: tabular-nums; }
+.dashboard-app .target-grid label span, .dashboard-app .wide-field > span { color: var(--muted); font-size: 11px; letter-spacing: 0; }
+.dashboard-app .target-grid input:focus, .dashboard-app .wide-field input:focus, .dashboard-app .ai-input-row input:focus { border-color: var(--lamp); box-shadow: 0 0 0 3px var(--lamp-wash); }
+.dashboard-app .target-grid label:nth-child(1):focus-within input { border-color: #ee9d95; }
+.dashboard-app .target-grid label:nth-child(2):focus-within input { border-color: #99d6b6; }
+.dashboard-app .target-grid label:nth-child(3):focus-within input { border-color: #a2c7fa; }
+
+/* The full-height heading sits inside an overflow-hidden card. Keep its
+   keyboard ring inset so every edge stays visible. */
+.dashboard-app .section-toggle:focus-visible { outline-offset: -3px; border-radius: var(--radius-sm); }
+.dashboard-app .section-toggle:hover span { color: var(--lamp); }
+.dashboard-app :is(input, select):disabled { opacity: .5; }
+.dashboard-app input::placeholder { color: var(--dim); opacity: 1; }
+.dashboard-app :is(.settings-content, .ai-reply-full) { scrollbar-width: thin; scrollbar-color: var(--hair-strong) var(--glass); }
+
+/* Quiet context below the prompt; longer model names wrap without widening
+   or pushing the action buttons out of the compact AI panel. */
+.dashboard-app .ai-route-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 8px; min-width: 0; margin: 0 14px; color: var(--muted); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+.dashboard-app .ai-route-status :is(strong, b) { color: var(--lamp); font-weight: 400; }
+
+/* Joint selection remains obvious without lighting every row. */
+.dashboard-app .servo-row { border-radius: var(--radius-sm); border: 1px solid transparent; background: var(--glass); transition: border-color 140ms, background 140ms; }
+.dashboard-app .servo-row:hover { border-color: var(--hair-strong); background: var(--panel-high); }
+.dashboard-app .servo-row.joint-selected { border-color: var(--lamp-line); background: var(--lamp-wash); box-shadow: inset 2px 0 var(--lamp); }
+.dashboard-app .servo-header strong { color: var(--text); font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; }
+.dashboard-app .servo-header span { padding: 1px 6px; border-radius: 2px; color: var(--lamp); background: var(--lamp-wash); font-variant-numeric: tabular-nums; }
+.dashboard-app .servo-meta { color: var(--dim); font-size: 11px; letter-spacing: 0; }
+.joint-select-button { padding: 0; color: inherit; background: transparent; border: 0; text-align: left; cursor: pointer; }
+.joint-selected .joint-select-button { color: var(--lamp); }
+.dashboard-app .slider-stack input[type="range"]::-webkit-slider-runnable-track { height: 5px; border-radius: 2px; background: var(--hair-strong); box-shadow: none; }
+.dashboard-app .slider-stack input[type="range"]::-webkit-slider-thumb { width: 12px; height: 18px; margin-top: -6px; border: 1px solid var(--lamp); border-radius: 2px; background: var(--lamp); box-shadow: 0 1px 3px #0004; }
+.dashboard-app .slider-stack input[type="range"]::-moz-range-thumb { width: 12px; height: 18px; border: 1px solid var(--lamp); border-radius: 2px; background: var(--lamp); }
+.dashboard-app .slider-stack input[type="range"]::-moz-range-track { height: 5px; border-radius: 2px; background: var(--hair-strong); }
+.dashboard-app .target-label { color: var(--lamp); background: var(--lamp-soft); border: 1px solid var(--lamp-line); border-radius: 2px; font-size: 11px; letter-spacing: 0; }
+.dashboard-app .present-marker { background: var(--go); box-shadow: none; }
+.joint-fine-control { display: grid; justify-items: center; padding-top: 8px; animation: dial-enter 160ms ease-out; }
+.joint-fine-control svg { width: min(100%, 210px); aspect-ratio: 1; overflow: visible; cursor: crosshair; touch-action: none; outline-offset: -4px; }
+.dial-orbit { fill: #ffffff03; stroke: var(--hair); stroke-width: 1; }
+.dial-range { fill: none; stroke: var(--lamp); stroke-width: 3; }
+.dial-tick { stroke: var(--dim); stroke-width: 1.2; }
+.dial-needle { stroke: var(--caution); stroke-width: 2.2; }
+.dial-handle { fill: var(--caution); }
+.dial-hub { fill: var(--lamp); }
+.dial-value { fill: var(--text); font-size: 17px; text-anchor: middle; font-variant-numeric: tabular-nums; }
+.dial-caption { fill: var(--dim); font-size: 7px; text-anchor: middle; letter-spacing: .6px; }
+.joint-fine-step { display: flex; align-items: center; justify-content: space-between; width: 100%; margin-bottom: 9px; }
+.joint-fine-step button { width: 30px; height: 28px; border: 1px solid var(--hair-strong); border-radius: 2px; color: var(--text); background: #ffffff05; cursor: pointer; }
+.joint-fine-step button:hover { color: var(--lamp); border-color: var(--lamp-line); background: var(--lamp-soft); }
+.joint-fine-step span { font-size: 11px; color: var(--muted); }
+.joint-fine-step b { margin-left: 6px; color: var(--lamp); }
+@keyframes dial-enter { from { opacity: 0; transform: scale(.94); } to { opacity: 1; transform: scale(1); } }
+
+/* Clear workspace, with colour only on the actual interaction guides. */
+.dashboard-app .scene-column { position: relative; }
+.dashboard-app .canvas-shell.cad-shell { box-shadow: none; }
+.dashboard-app .scene-toolbar { border: 0; border-bottom: 1px solid var(--hair); background: var(--void); }
+.dashboard-app .scene-toolbar strong { color: var(--text); font-size: 13px; font-weight: 400; letter-spacing: 0; }
+.dashboard-app .scene-toolbar > div:first-child span { color: var(--muted); font-size: 11px; }
+.dashboard-app .cad-tools { border: 1px solid var(--hair-strong); border-radius: var(--radius); padding: 4px; background: #191c22ed; box-shadow: 0 4px 12px #0002; }
+.dashboard-app .cad-tools button { border-radius: var(--radius-sm); color: var(--muted); }
+.dashboard-app .cad-tools button:hover, .dashboard-app .cad-tools button.active { color: var(--lamp); background: var(--lamp-soft); box-shadow: none; }
+.cad-selection-badge { position: absolute; left: 22px; top: 111px; display: grid; grid-template-columns: 1fr auto; gap: 3px 15px; padding: 9px 13px; border: 1px solid var(--lamp-line); border-radius: 2px; background: #191c22f0; }
+.cad-selection-badge span { color: var(--muted); font-size: 10px; }
+.cad-selection-badge strong { grid-column: 1; color: var(--lamp); font-size: 13px; font-weight: 400; }
+.cad-selection-badge button { grid-column: 2; grid-row: 1 / 3; background: transparent; color: var(--muted); cursor: pointer; }
+.cad-selection-badge em { grid-column: 1 / -1; color: var(--muted); font-size: 10px; font-style: normal; font-variant-numeric: tabular-nums; }
+.cad-selection-badge.dragging { border-color: var(--lamp); }
+.cad-selection-badge.dragging em { color: var(--lamp); }
+.dashboard-app .dashboard-divider { background: var(--void); }
+.dashboard-app .dashboard-divider::before { background: var(--hair); opacity: 1; }
+.dashboard-app .dashboard-divider > span { width: 3px; height: 32px; border-radius: 2px; background: var(--hair-strong); }
+.dashboard-app .dashboard-divider:hover > span, .dashboard-app .dashboard-divider:focus-visible > span { background: var(--lamp); }
+.dashboard-app .cad-live-dot { background: var(--go); box-shadow: none; }
+.dashboard-app .cad-target-dot { background: var(--lamp); box-shadow: none; }
+.dashboard-app .cad-joint-dot { background: var(--go); box-shadow: 0 0 0 2px var(--lamp-line); }
+.dashboard-app .cad-legend { color: var(--muted); font-size: 11px; letter-spacing: 0; }
+.dashboard-app .cad-help, .dashboard-app .cad-context-note { color: var(--dim); }
+
+/* Safety states retain their semantic colours and are never decorative. */
+.protection-status { display: flex; align-items: center; gap: 9px; margin: 10px 14px; padding: 10px; border: 1px solid var(--hair); border-radius: 2px; color: var(--muted); background: var(--glass); }
+.protection-status > svg { flex-shrink: 0; color: var(--go); }
+.protection-status strong { display: block; font-size: 12px; font-weight: 400; color: var(--text); }
+.protection-status small { display: block; font-size: 11px; color: var(--muted); line-height: 1.5; }
+.protection-status.tripped { border-color: #ff92994d; background: #ff929908; }
+.protection-status.tripped > svg, .protection-status.tripped strong { color: var(--alarm); }
+/* Hand guiding (lib/HandGuide.ts): the strip while it runs says the arm goes limp on a fault */
+.protection-status.hand-guide-status { border-color: #ffc36b66; background: #ffc36b0d; }
+.protection-status.hand-guide-status > svg, .protection-status.hand-guide-status strong { color: #ffc36b; }
+.hand-guide-button[aria-disabled="true"], .hand-guide-recalibrate[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
+/* The Motion panel's hand-guide button and, calibrated, its narrow Calibrate again beside it: one item of the grid */
+.hand-guide-pair { display: flex; gap: 4px; flex: 1 1 40%; min-width: 0; }
+.hand-guide-pair[hidden] { display: none; }
+.dashboard-app .dashboard-layout .button-grid .hand-guide-pair .action-button { flex: 1 1 auto; min-width: 0; }
+.hand-guide-recalibrate { display: grid; place-items: center; flex: 0 0 28px; border: 1px solid var(--hair); border-radius: 2px; background: transparent; color: var(--muted); cursor: pointer; }
+.hand-guide-recalibrate:hover { color: var(--text); }
+.bridge-update-status { display: grid; gap: 7px; margin: 10px 14px; padding: 11px; border: 1px solid #e6c58740; border-radius: 2px; background: #e6c58708; color: var(--caution); }
+.bridge-update-status strong { font-size: 12px; font-weight: 400; }
+.bridge-update-status small { color: #c8ba9b; font-size: 11px; line-height: 1.5; }
+.bridge-update-status button { padding: 8px 10px; border: 1px solid #e6c58750; border-radius: 2px; color: var(--caution); cursor: pointer; font-size: 12px; background: #e6c5870d; }
+.dashboard-app .warn-text { color: var(--caution); }
+.dashboard-app .ok-text { color: var(--go); }
+
+/* AI has a small character, not a wall of decoration. Every state comes
+   from the existing model, proposal and motion state. */
+.ai-companion { display: flex; align-items: center; gap: 14px; position: relative; margin: 16px 16px 0; padding: 15px; border: 1px solid var(--lamp-line); border-radius: 2px; background: linear-gradient(125deg, var(--lamp-soft), var(--lamp-wash) 70%); }
+.ai-companion-portrait { display: grid; place-items: center; position: relative; flex: 0 0 64px; width: 64px; height: 64px; color: var(--lamp); border: 1px solid var(--lamp-line); border-radius: 2px; background: var(--glass); box-shadow: inset 0 1px #ffffff0d, 2px 2px 0 #0002; overflow: hidden; }
+.pixel-bot { display: block; width: 48px; height: 48px; image-rendering: pixelated; }
+.pixel-bot-screen { fill: var(--glass, #14171c); }
+.ai-companion-copy { min-width: 0; }
+.ai-companion-name { display: block; margin-bottom: 5px; color: var(--lamp); font-size: 11px; }
+.ai-companion-name span { margin-left: 8px; color: var(--muted); }
+.ai-companion-copy strong { display: block; color: var(--text); font-size: 16px; font-weight: 400; line-height: 1.3; }
+.ai-companion-copy p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.ai-companion-light { position: absolute; right: 10px; top: 10px; width: 5px; height: 5px; border-radius: 1px; background: var(--go); }
+.ai-companion[data-state="offline"] .ai-companion-light { background: var(--dim); }
+.ai-companion[data-state="offline"] .ai-companion-portrait { color: var(--dim); }
+.ai-companion[data-state="fault"] .ai-companion-portrait, .ai-companion[data-state="fault"] .ai-companion-copy strong { color: var(--alarm); }
+.ai-companion[data-state="fault"] .ai-companion-light { background: var(--alarm); }
+.ai-companion[data-state="review"] .ai-companion-light { background: var(--caution); }
+.ai-companion[data-state="thinking"] .ai-companion-light { background: var(--lamp); animation: pixel-think 1.2s steps(2, end) infinite; }
+.dashboard-app[data-scanlines="true"] .ai-companion-portrait::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: repeating-linear-gradient(0deg, transparent 0 3px, #c1b6ee0a 3px 4px); }
+@keyframes pixel-think { 50% { opacity: .4; } }
+
+/* Clancy is a 48x48 grid. AiCompanion makes each art pixel a whole number of
+   device pixels and snaps the sprite onto the device grid; these are the fallback
+   size and place. Each data-state sets a static pose, which is all reduced motion
+   shows. The keyframes only step custom properties, in whole art pixels (px are SVG
+   user units) or whole frames, and the parts turn those into a transform or an
+   opacity: animating transform or opacity itself puts SVG parts on compositor
+   layers, which land between device pixels at ratios like 2.25 and blur. Motion
+   stays small beside a live arm motion. The antenna bulb mirrors the status light. */
+.ai-companion { --bot-bulb: var(--go); }
+.ai-companion[data-state="thinking"] { --bot-bulb: var(--text); }
+.ai-companion[data-state="review"] { --bot-bulb: var(--caution); }
+.ai-companion[data-state="fault"] { --bot-bulb: var(--alarm); }
+.ai-companion[data-state="offline"] { --bot-bulb: var(--dim); }
+.pixel-bot-portrait { overflow: visible; }
+.ai-companion-portrait .pixel-bot-portrait { position: absolute; left: calc(50% - 24px); top: calc(50% - 24px); }
+.pixel-bot-rig { transform: translateX(calc(var(--shake, 0) * 1px)); }
+.pixel-bot-body { transform: translateY(calc(var(--bob, 0) * 1px)); }
+.pixel-bot-portrait :is(.pixel-bot-arm-left, .pixel-bot-arm-right, .pixel-bot-foot-left, .pixel-bot-foot-right) { transform: translateY(calc(var(--lift, 0) * 1px)); }
+.pixel-bot-gaze { transform: translate(calc(var(--gaze-x, 0) * 1px), calc(var(--gaze-y, 0) * 1px)); }
+.pixel-bot-gaze > :not(.pixel-bot-eyes-shut) { opacity: calc(1 - var(--blink, 0)); }
+.pixel-bot-eyes-shut { opacity: var(--blink, 0); }
+.pixel-bot-bulb { fill: var(--bot-bulb); opacity: var(--lit, 1); }
+.pixel-bot-glow { fill: var(--bot-bulb); opacity: calc(var(--lit, 1) * .45); }
+.pixel-bot-blush { fill: var(--alarm); opacity: .5; }
+.pixel-bot-question { fill: var(--caution); transform: translateY(calc(var(--float, 0) * 1px)); }
+.pixel-bot-snore { opacity: .8; }
+.pixel-bot-portrait :is(.pixel-bot-loader path, .pixel-bot-snore path, .pixel-bot-sparkle) { opacity: var(--lit, 1); }
+.pixel-bot-sparkle-small { opacity: var(--lit, 0); }
+.pixel-bot-portrait :is(.pixel-bot-glow, .pixel-bot-eyes-half, .pixel-bot-eyes-shut, .pixel-bot-eyes-x, .pixel-bot-blush, .pixel-bot-smile,
+  .pixel-bot-mouth-o, .pixel-bot-mouth-zigzag, .pixel-bot-loader, .pixel-bot-question, .pixel-bot-sparkle, .pixel-bot-sparkle-small, .pixel-bot-snore) { display: none; }
+/* Ready: smiling, a slow bob, a blink now and then, the antenna light pulsing. */
+.ai-companion[data-state="ready"] :is(.pixel-bot-glow, .pixel-bot-blush, .pixel-bot-smile) { display: inline; }
+.ai-companion[data-state="ready"] .pixel-bot-mouth { display: none; }
+.ai-companion[data-state="ready"] .pixel-bot-body { animation: pixel-bob 2.4s steps(1, end) infinite; }
+.ai-companion[data-state="ready"] .pixel-bot-glow { animation: pixel-pulse 2.4s steps(1, end) infinite; }
+.ai-companion:is([data-state="ready"], [data-state="moving"], [data-state="review"]) .pixel-bot-eyes-shut { display: inline; }
+.ai-companion:is([data-state="ready"], [data-state="moving"], [data-state="review"]) :is(.pixel-bot-eyes, .pixel-bot-eyes-shut) { animation: pixel-blink 6s steps(1, end) infinite; }
+/* Thinking: eyes up and darting, a three-dot loader for a mouth, the bulb flickering. */
+.ai-companion[data-state="thinking"] .pixel-bot-mouth { display: none; }
+.ai-companion[data-state="thinking"] .pixel-bot-loader { display: inline; }
+.ai-companion[data-state="thinking"] .pixel-bot-gaze { --gaze-x: 1; --gaze-y: -1; animation: pixel-scan 1.6s steps(1, end) infinite; }
+.ai-companion[data-state="thinking"] .pixel-bot-loader path { animation: pixel-load 1.2s steps(1, end) infinite; }
+.ai-companion[data-state="thinking"] .pixel-bot-loader path:nth-child(2) { --lit: .6; animation-delay: -.8s; }
+.ai-companion[data-state="thinking"] .pixel-bot-loader path:nth-child(3) { --lit: .3; animation-delay: -.4s; }
+.ai-companion[data-state="thinking"] .pixel-bot-bulb { animation: pixel-flicker 1.4s steps(1, end) infinite; }
+/* Moving: an unhurried march in place, feet and opposite arms taking turns. */
+.ai-companion[data-state="moving"] .pixel-bot-body { animation: pixel-hop .6s steps(1, end) infinite; }
+.ai-companion[data-state="moving"] :is(.pixel-bot-foot-left, .pixel-bot-arm-right) { animation: pixel-step 1.2s steps(1, end) infinite; }
+.ai-companion[data-state="moving"] :is(.pixel-bot-foot-right, .pixel-bot-arm-left) { animation: pixel-step 1.2s steps(1, end) -.6s infinite; }
+/* Settling: heavy-lidded, a slow blink, one foot tapping while the arm comes to rest. */
+.ai-companion[data-state="settling"] .pixel-bot-eyes { display: none; }
+.ai-companion[data-state="settling"] :is(.pixel-bot-eyes-half, .pixel-bot-eyes-shut) { display: inline; animation: pixel-doze 5s steps(1, end) infinite; }
+.ai-companion[data-state="settling"] .pixel-bot-foot-right { animation: pixel-tap 1.6s steps(1, end) infinite; }
+/* Review: eyes down on the proposal card below, now and then back up at you, with a bobbing question and a sparkle. */
+.ai-companion[data-state="review"] :is(.pixel-bot-glow, .pixel-bot-mouth-o, .pixel-bot-question, .pixel-bot-sparkle, .pixel-bot-sparkle-small) { display: inline; }
+.ai-companion[data-state="review"] .pixel-bot-mouth { display: none; }
+.ai-companion[data-state="review"] .pixel-bot-gaze { --gaze-y: 2; animation: pixel-glance 4s steps(1, end) infinite; }
+.ai-companion[data-state="review"] .pixel-bot-question { animation: pixel-float 1.2s steps(1, end) infinite; }
+.ai-companion[data-state="review"] .pixel-bot-sparkle { animation: pixel-twinkle 1.6s steps(1, end) infinite; }
+.ai-companion[data-state="review"] .pixel-bot-sparkle-small { animation: pixel-twinkle-small 1.6s steps(1, end) infinite; }
+/* Fault: X eyes, a wobbly mouth, drooped arms, the red bulb blinking and a short shake. */
+.ai-companion[data-state="fault"] :is(.pixel-bot-eyes, .pixel-bot-mouth) { display: none; }
+.ai-companion[data-state="fault"] :is(.pixel-bot-eyes-x, .pixel-bot-mouth-zigzag) { display: inline; }
+.ai-companion:is([data-state="fault"], [data-state="offline"]) :is(.pixel-bot-arm-left, .pixel-bot-arm-right) { --lift: 2; }
+.ai-companion[data-state="fault"] .pixel-bot-rig { animation: pixel-shake 4s steps(1, end) infinite; }
+.ai-companion[data-state="fault"] .pixel-bot-bulb { animation: pixel-alarm .8s steps(1, end) infinite; }
+/* Offline: asleep and slumped, the bulb off, breathing slowly with z's drifting up. */
+.ai-companion[data-state="offline"] :is(.pixel-bot-eyes, .pixel-bot-bulb-shine) { display: none; }
+.ai-companion[data-state="offline"] :is(.pixel-bot-eyes-shut, .pixel-bot-snore) { display: inline; }
+.ai-companion[data-state="offline"] .pixel-bot-eyes-shut { --blink: 1; }
+.ai-companion[data-state="offline"] .pixel-bot-bulb { --lit: .45; }
+.ai-companion[data-state="offline"] .pixel-bot-body { --bob: 1; animation: pixel-breathe 4s steps(1, end) infinite; }
+.ai-companion[data-state="offline"] .pixel-bot-snore path { animation: pixel-snore 3s steps(1, end) infinite; }
+.ai-companion[data-state="offline"] .pixel-bot-snore path:nth-child(2) { animation-delay: -2s; }
+.ai-companion[data-state="offline"] .pixel-bot-snore path:nth-child(3) { animation-delay: -1s; }
+/* Unregistered custom properties change discretely, and with steps(1, end) each
+   keyframe holds its value until the next one. */
+@keyframes pixel-bob { 0% { --bob: 0; } 50%, 100% { --bob: 1; } }
+@keyframes pixel-pulse { 0% { --lit: 1; } 50%, 100% { --lit: 0; } }
+@keyframes pixel-blink { 0% { --blink: 0; } 30% { --blink: 1; } 32.5% { --blink: 0; } 70% { --blink: 1; } 72.5% { --blink: 0; } 75% { --blink: 1; } 77.5%, 100% { --blink: 0; } }
+@keyframes pixel-scan { 0% { --gaze-x: -2; } 25% { --gaze-x: 0; } 50% { --gaze-x: 2; } 75%, 100% { --gaze-x: 0; } }
+@keyframes pixel-load { 0% { --lit: 1; } 33.33%, 100% { --lit: .3; } }
+@keyframes pixel-flicker { 0% { --lit: 1; } 12% { --lit: .35; } 20% { --lit: 1; } 55% { --lit: .35; } 60% { --lit: 1; } 66% { --lit: .35; } 72%, 100% { --lit: 1; } }
+@keyframes pixel-hop { 0% { --bob: -1; } 50%, 100% { --bob: 0; } }
+@keyframes pixel-step { 0% { --lift: -2; } 25%, 100% { --lift: 0; } }
+@keyframes pixel-doze { 0% { --blink: 0; } 70% { --blink: 1; } 82%, 100% { --blink: 0; } }
+@keyframes pixel-tap { 0% { --lift: -1; } 12% { --lift: 0; } 24% { --lift: -1; } 36%, 100% { --lift: 0; } }
+@keyframes pixel-glance { 0% { --gaze-y: 2; } 65% { --gaze-y: 0; } 85%, 100% { --gaze-y: 2; } }
+@keyframes pixel-float { 0% { --float: 0; } 50%, 100% { --float: -1; } }
+@keyframes pixel-twinkle { 0% { --lit: 1; } 25%, 100% { --lit: 0; } }
+@keyframes pixel-twinkle-small { 0% { --lit: 0; } 25% { --lit: 1; } 50% { --lit: 0; } 75% { --lit: 1; } 100% { --lit: 0; } }
+@keyframes pixel-shake { 0% { --shake: -1; } 3% { --shake: 1; } 6% { --shake: -1; } 9% { --shake: 1; } 12%, 100% { --shake: 0; } }
+@keyframes pixel-alarm { 0% { --lit: 1; } 50%, 100% { --lit: .3; } }
+@keyframes pixel-breathe { 0% { --bob: 1; } 50%, 100% { --bob: 2; } }
+@keyframes pixel-snore { 0% { --lit: 1; } 33.33%, 100% { --lit: 0; } }
+.dashboard-app .ai-input-row { padding-top: 0; grid-template-columns: minmax(0, 1fr) 40px; }
+.dashboard-app .ai-input-row input { height: 40px; font-size: 13px; }
+.dashboard-app .ai-input-row .icon-button { width: 40px; height: 40px; color: var(--lamp); border-color: var(--lamp-line); background: var(--lamp-soft); }
+.dashboard-app .ai-approval-box { border: 1px solid var(--hair); border-radius: var(--radius-sm); background: var(--glass); }
+.dashboard-app .ai-approval-box.ready { border-color: var(--lamp-line); background: var(--lamp-wash); box-shadow: inset 2px 0 var(--lamp); }
+.dashboard-app .ai-approval-box.idle { border-style: dashed; background: transparent; }
+.dashboard-app .pending-note { color: var(--muted); font-size: 12px; }
+.dashboard-app .ai-motion-copy h2 { color: var(--text); font-size: 13px; letter-spacing: 0; }
+.dashboard-app .ai-task-strip { border: 1px solid var(--lamp-line); border-radius: 2px; color: var(--text); background: var(--lamp-wash); }
+.dashboard-app .ai-task-strip button { border-radius: 2px; border: 1px solid var(--hair-strong); color: var(--text); background: #ffffff05; font-size: 12px; }
+/* The camera check stopped the AI: persistent until a capture passes it. */
+.dashboard-app .camera-gate-banner { display: grid; gap: 6px; padding: 10px 11px; border: 1px solid #ff92994d; border-radius: 2px; background: #ff929908; color: var(--alarm); }
+.dashboard-app .camera-gate-banner strong { font-size: 12px; font-weight: 400; line-height: 1.45; }
+.dashboard-app .camera-gate-banner small { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.dashboard-app .ai-task-rec { color: var(--alarm); border: 1px solid #ff929945; background: #ff929912; border-radius: 2px; }
+.dashboard-app .ai-reply { border: 0; border-left: 2px solid var(--lamp-line); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: var(--lamp-wash); font-size: 13px; line-height: 1.6; }
+.dashboard-app .ai-reply-label { color: var(--lamp); font-size: 11px; letter-spacing: .05em; }
+.dashboard-app .ai-context-meter progress { accent-color: var(--lamp); }
+.dashboard-app .ai-model-stat strong { color: var(--text); font-size: 12px; }
+.dashboard-app .ai-statistics { gap: 11px; }
+.dashboard-app .ai-statistics p { color: var(--muted); line-height: 1.5; }
+.dashboard-app .ai-stat-tile { padding: 10px; }
+.dashboard-app .ai-stat-tile[data-stat="total"] { border-color: var(--lamp-line); background: var(--lamp-wash); }
+.dashboard-app .ai-stat-tile[data-stat="total"] strong { color: var(--lamp); }
+
+/* Temporary notices use a quiet top-right stack. */
+.hud-notices { position: absolute; z-index: 4; top: 126px; right: 16px; width: min(300px, calc(100% - 32px)); display: grid; gap: 8px; pointer-events: none; }
+.hud-notice { position: relative; display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px 12px; color: var(--muted); border: 1px solid var(--hair-strong); border-radius: 2px; overflow: hidden; pointer-events: auto; background: #20242cf5; box-shadow: 0 5px 18px #0003; animation: notice-enter 160ms ease-out; }
+.hud-notice > svg { flex: 0 0 auto; color: var(--go); margin-top: 2px; }
+.hud-notice.warn > svg { color: var(--caution); }
+.hud-notice > div:not(.notice-timer) { flex: 1; min-width: 0; }
+.hud-notice span { display: none; }
+.hud-notice p { font-size: 12px; line-height: 1.5; margin: 0; overflow-wrap: anywhere; color: var(--text); }
+.hud-notice button { background: transparent; color: var(--muted); cursor: pointer; padding: 2px; }
+.notice-timer { position: absolute; left: 0; bottom: 0; width: 100%; height: 2px; background: var(--lamp); transform-origin: left; animation: notice-life 10s linear forwards; }
+@keyframes notice-life { to { transform: scaleX(0); } }
+@keyframes notice-enter { from { opacity: 0; transform: translateY(-4px); } }
+
+/* Camera pixels are unfiltered; the floating window keeps its neutral chrome. */
+.dashboard-app .robot-call { padding: 7px !important; }
+.dashboard-app .robot-call .video-frame { aspect-ratio: 4 / 3; min-height: 210px; border-radius: 2px; overflow: hidden; border: 1px solid var(--hair); background: #000; isolation: isolate; }
+.robot-call video { display: block; width: 100%; height: 100%; object-fit: contain; transform: translateZ(0); filter: none; opacity: 1; mix-blend-mode: normal; }
+.robot-call .video-placeholder.robot-avatar { color: #aeb2b8; gap: 15px; font-size: 12px; }
+.robot-avatar > svg { width: 72px; height: 72px; border: 1px solid #3b3d40; border-radius: 2px; padding: 17px; color: #c4c7cc; background: #1d1f22; }
+.dashboard-app .camera-window.robot-call { border: 1px solid #3b3d40; border-radius: 2px; background: #151618; box-shadow: 0 12px 40px #0006; }
+.dashboard-app .camera-window[data-dragging="true"] { box-shadow: 0 16px 48px #0008; }
+.dashboard-app .camera-window-header { border-bottom: 1px solid #303236; background: #1d1f22; }
+.dashboard-app .camera-window-drag > svg { color: #aeb2b8; }
+.dashboard-app .camera-window-title strong { color: #f0f1f3; font-size: 13px; font-weight: 700; letter-spacing: normal; text-transform: none; }
+.dashboard-app .camera-window-title small { color: #aeb2b8; letter-spacing: normal; }
+.dashboard-app .camera-window-actions button { border-radius: 2px; color: #c4c7cc; }
+.dashboard-app .camera-window-actions button:hover { color: #fff; background: #ffffff12; }
+.dashboard-app .camera-window-resize { color: #aeb2b8; }
+.dashboard-app .camera-window-tile { color: #e4e6e9; background: #1d1f22; box-shadow: none; }
+.dashboard-app .camera-window-tile:hover { background: #303236; }
+.dashboard-app .camera-window.robot-call.call-minimized { border-radius: 2px; }
+.dashboard-app .camera-window .camera-popout-note { color: #c4c7cc; background: #151618; }
+.dashboard-app .camera-window .camera-popout-error { border-radius: 2px; background: #e6c58714; color: var(--caution); }
+
+/* A restrained instrument accent on the speed control. */
+.dashboard-app .motion-throttle { border: 1px solid var(--hair); border-radius: var(--radius-sm); color: var(--text); background: linear-gradient(150deg, var(--lamp-wash), transparent); box-shadow: none; }
+.dashboard-app .motion-throttle::before, .dashboard-app .motion-throttle::after { display: none; }
+.dashboard-app .throttle-heading label { font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--text); }
+.dashboard-app .throttle-heading label span { color: var(--dim); font-size: 11px; letter-spacing: .1em; }
+.dashboard-app .throttle-heading output { border: 1px solid var(--lamp-line); border-radius: 2px; background: var(--lamp-wash); color: var(--lamp); box-shadow: inset 0 1px #ffffff0a; text-shadow: none; }
+.dashboard-app .motion-throttle input[type="range"]::-webkit-slider-runnable-track { height: 6px; border-radius: 2px; background: linear-gradient(to right, var(--lamp) var(--throttle-fill), var(--glass) var(--throttle-fill)); box-shadow: none; }
+.dashboard-app .motion-throttle input[type="range"]::-webkit-slider-thumb { width: 13px; height: 23px; margin-top: -9px; border: 1px solid var(--lamp); border-radius: 2px; background: var(--lamp); box-shadow: 0 2px 4px #0004; }
+.dashboard-app .motion-throttle input[type="range"]::-moz-range-track { height: 6px; border-radius: 2px; background: var(--glass); }
+.dashboard-app .motion-throttle input[type="range"]::-moz-range-progress { height: 6px; background: var(--lamp); }
+.dashboard-app .motion-throttle input[type="range"]::-moz-range-thumb { width: 13px; height: 23px; border: 1px solid var(--lamp); border-radius: 2px; background: var(--lamp); }
+.dashboard-app .throttle-scale { border-color: var(--hair-strong); background-image: repeating-linear-gradient(90deg, var(--hair-strong) 0 1px, transparent 1px calc(100% / 18)); }
+.dashboard-app .throttle-help { color: var(--muted); font-size: 11px; letter-spacing: 0; }
+.dashboard-app .throttle-lamp { background: var(--lamp); box-shadow: none; }
+.dashboard-app .motion-throttle[data-enabled="false"] output { color: var(--dim); }
+.dashboard-app .motion-throttle[data-enabled="false"] .throttle-lamp { background: var(--dim); }
+.dashboard-app .button-grid .action-button:last-child { grid-column: 1 / -1; }
+
+.dashboard-app .settings-panel { z-index: 95; top: 66px; bottom: 12px; border: 1px solid var(--hair-strong); border-radius: var(--radius); color: var(--text); background: var(--panel); box-shadow: 0 12px 40px #0005; }
+.dashboard-app .settings-toggle small, .dashboard-app .settings-heading button { color: var(--muted); }
+.dashboard-app .settings-heading { color: var(--text); border-color: var(--hair); letter-spacing: 0; }
+.dashboard-app .settings-content legend { color: var(--lamp); font-size: 12px; letter-spacing: 0; }
+.dashboard-app .settings-content fieldset { border-color: var(--hair); }
+.dashboard-app .settings-toggle input, .dashboard-app .settings-range input { accent-color: var(--lamp); }
+.dashboard-app .settings-range output { color: var(--lamp); }
+.dashboard-app .settings-select select { border-radius: var(--radius-sm); border: 1px solid var(--hair-strong); background: var(--glass); color: var(--text); }
+.dashboard-app .settings-note, .dashboard-app .settings-intro { color: var(--muted); }
+.dashboard-app .settings-reset { border-radius: var(--radius-sm); border: 1px solid var(--hair-strong); background: #ffffff05; color: var(--text); }
+.dashboard-app .settings-reset:hover { color: var(--lamp); border-color: var(--lamp-line); background: var(--lamp-soft); }
+.cal-panel { border: 1px solid var(--hair-strong); border-radius: 2px; background: var(--panel); box-shadow: 0 12px 40px #0005; }
+.cal-header strong, .cal-section-title { color: var(--text); letter-spacing: 0; }
+.cal-actions button { border-radius: 2px; border: 1px solid var(--hair-strong); background: #ffffff05; color: var(--text); }
+.cal-actions button:hover:not(:disabled) { color: var(--lamp); border-color: var(--lamp-line); background: var(--lamp-soft); }
+.cal-actions button.cal-fit { color: var(--go); border-color: var(--go-line); background: #99d6b610; }
+
+@media (max-width: 1450px) { .hud-notices { top: 214px; } }
+@media (max-width: 1200px) {
+  .dashboard-app .brand h1 small { display: none; }
+  .annunciators { gap: 8px; }
+  .dashboard-app .connection-pill { display: none; }
+}
+@media (max-width: 800px) {
+  .annunciators { display: none; }
+  .dashboard-app .topbar { gap: 6px; }
+  .dashboard-app .brand-mark { display: none; }
+  .dashboard-app .port-select { max-width: 85px; }
+  .ai-companion { padding: 12px; gap: 10px; }
+  /* Room for the 48 grid at one device-pixel multiple; AiCompanion picks the multiple that fits. */
+  .ai-companion-portrait { flex-basis: 52px; width: 52px; height: 52px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-app *, .dashboard-app *::before, .dashboard-app *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+
+/* ---- A hint of Y2K ---------------------------------------------------------
+   Seven small, coordinated touches over the arcade HUD. Every one is paint only:
+   no width, height, padding, margin, border width, font or line-height changes,
+   so FitColumn, the container queries and the no-scroll layout measure exactly
+   the boxes they did before.
+     1 Chrome titles: the brand, the panel, workspace, dialog and live view titles.
+     2 One sparkle pair beside the brand; it twinkles only without reduced motion.
+     3 Gel gloss on the filled primary action (Send, Approve) and the slider
+       thumbs; the brand tile becomes a small glossy gem in an iridescent edge,
+       so the logo, the chrome name and its sparkles read as one lockup.
+     4 An iridescent cyan, lilac and orchid strip on whatever is active or
+       selected: the mode, the selected joint, a proposal awaiting approval, a
+       divider being dragged, the notice timer.
+     5 Iridescent hairlines under the top bar and the panel headings.
+     6 Keyboard focus: a cyan ring with a soft lilac halo, now on the joint
+       sliders and the throttle too.
+     7 A deep navy glow in the empty space of the side columns and the mode rail.
+   Corners stay at 1-2 px (deliberate: 3d63dd1, 9be935b) and Play stays the face.
+   Nothing here touches the safety colours, the emergency stop, Clancy's sprite,
+   the 3D canvas or camera pixels; the orchid (hue 301) stays well clear of
+   --alarm (hue 356). */
+.dashboard-app {
+  --y2k-cyan: #7fe9ff;
+  --y2k-lilac: #b9a6ff;
+  --y2k-orchid: #f7a1f5;
+  --y2k-iris: var(--y2k-cyan), var(--y2k-lilac) 52%, var(--y2k-orchid);
+  /* Polished metal with a horizon just below the middle of the capitals. Its
+     darkest stop is 7.2:1 on a panel, so the titles keep their contrast. */
+  --y2k-chrome: linear-gradient(180deg, #ffffff 26%, #e3e9f2 48%, #9aa9c0 53%, #c6d0de 66%, #f2f5fa 82%);
+  /* Aqua-style gel: a bright upper half, a hard edge, a slightly shaded base. */
+  --y2k-gloss: linear-gradient(180deg, #ffffff6b, #ffffff26 48%, #ffffff00 52%, #0000 72%, #0000001a);
+  --y2k-glow: radial-gradient(ellipse 130% 60% at 50% 104%, #1a2b4fb3, #1a2b4f40 48%, #1a2b4f00 76%);
+  --y2k-sparkle: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M10 0C10.9 6.2 13.8 9.1 20 10C13.8 10.9 10.9 13.8 10 20C9.1 13.8 6.2 10.9 0 10C6.2 9.1 9.1 6.2 10 0Z'/%3E%3C/svg%3E");
+}
+
+/* 1 Chrome titles, the gradient repeated once per line so a title that wraps
+   (Arm Workspace on a phone) shines the same on every line. Hovering a panel
+   title still lights it in the lamp colour. */
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .dashboard-app :is(.brand h1, .section-toggle span, .scene-toolbar strong, .settings-heading h2, .cal-header strong, .camera-window-title strong, .ai-motion-copy h2) {
+    background-image: var(--y2k-chrome); background-size: 100% 1lh; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  /* The brand's chrome catches a little lilac, like the sparkles beside it (7.2:1 at its darkest). */
+  .dashboard-app .brand h1 { background-image: linear-gradient(180deg, #ffffff 22%, #e9eef7 46%, #93a6c9 52%, #b9c3ec 64%, #e4dcff 82%); }
+  .dashboard-app .brand h1 small { -webkit-text-fill-color: var(--dim); }
+  .dashboard-app .section-toggle:hover span { -webkit-text-fill-color: var(--lamp); }
+}
+@media (forced-colors: active) {
+  .dashboard-app :is(.brand h1, .brand h1 small, .section-toggle span, .scene-toolbar strong, .settings-heading h2, .cal-header strong, .camera-window-title strong, .ai-motion-copy h2) {
+    background-image: none; -webkit-text-fill-color: currentColor;
+  }
+}
+
+/* 2 The sparkle pair: absolutely placed (the h1 is a flex row, so they take no
+   room), sized and placed in em so they follow the title's 17 px and 12 px
+   sizes. "Clancy" ends 2.905em from the start of the title. */
+.dashboard-app .brand h1 { position: relative; }
+.dashboard-app .brand h1::before, .dashboard-app .brand h1::after {
+  content: ""; position: absolute; pointer-events: none;
+  background: linear-gradient(135deg, #ffffff 22%, var(--y2k-cyan) 58%, var(--y2k-lilac));
+  -webkit-mask: var(--y2k-sparkle) center / contain no-repeat; mask: var(--y2k-sparkle) center / contain no-repeat;
+}
+.dashboard-app .brand h1::after { left: 2.95em; top: .02em; width: .56em; height: .56em; }
+.dashboard-app .brand h1::before { left: 3.42em; top: -.26em; width: .32em; height: .32em; }
+@media (prefers-reduced-motion: no-preference) {
+  .dashboard-app .brand h1::after { animation: y2k-twinkle 4.2s ease-in-out infinite; }
+  .dashboard-app .brand h1::before { animation: y2k-twinkle 4.2s ease-in-out -2.1s infinite; }
+}
+@keyframes y2k-twinkle { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .5; transform: scale(.7); } }
+/* The compact top bar drops the brand ornaments (the logo tile goes too), so
+   nothing decorative ever sits beside the emergency stop. */
+@media (max-width: 800px) {
+  .dashboard-app .brand h1::before, .dashboard-app .brand h1::after { content: none; }
+}
+
+/* 3 Gel gloss. Dark ink stays at 7.3:1 or more on the lamp blue gel and 5.4:1 or
+   more on the lavender one, highlight to base. Pressing flips the gel. The brand
+   tile's iridescent edge is its existing 1 px border, painted from the border box
+   so the corners stay; its icon keeps 4.3:1 or more on the gloss. */
+.dashboard-app .brand-mark {
+  border-color: transparent;
+  background: linear-gradient(180deg, #ffffff2b, #ffffff0d 47%, #0000 52%, #0000 74%, #7fe9ff1f) padding-box,
+    linear-gradient(165deg, #1e2d4d, #151b29 78%) padding-box,
+    linear-gradient(135deg, #7fe9ffcc, #b9a6ffb3 52%, #f7a1f5cc) border-box;
+}
+.dashboard-app .action-button.primary { background: var(--y2k-gloss), var(--lamp); box-shadow: inset 0 1px #ffffff8c, inset 0 -1px #0000001f; }
+.dashboard-app .action-button.primary:hover:not(:disabled) { background: var(--y2k-gloss), var(--accent-hover); }
+.dashboard-app .action-button.primary:active:not(:disabled) { background: linear-gradient(180deg, #0000001f, #ffffff1f), var(--lamp); }
+.dashboard-app :is(.slider-stack, .motion-throttle) input[type="range"]::-webkit-slider-thumb { background: var(--y2k-gloss), var(--lamp); }
+.dashboard-app :is(.slider-stack, .motion-throttle) input[type="range"]::-moz-range-thumb { background: var(--y2k-gloss), var(--lamp); }
+
+/* 4 The iridescent strip: a 2 px background stripe where the lamp bar was an
+   inset shadow, so it keeps the same place and size and a focus ring cannot
+   replace it. */
+.dashboard-app .mode-rail button.active { background: linear-gradient(180deg, var(--y2k-iris)) left / 2px 100% no-repeat, linear-gradient(145deg, var(--lamp-soft), var(--lamp-wash)); box-shadow: inset 0 1px #ffffff0e; }
+.dashboard-app .servo-row.joint-selected,
+.dashboard-app .ai-approval-box.ready { background: linear-gradient(180deg, var(--y2k-iris)) left / 2px 100% no-repeat, var(--lamp-wash); box-shadow: none; }
+.dashboard-app .dashboard-divider:hover > span, .dashboard-app .dashboard-divider:focus-visible > span { background: linear-gradient(180deg, var(--y2k-iris)); }
+.dashboard-app .notice-timer { background: linear-gradient(90deg, var(--y2k-iris)); }
+
+/* 5 Iridescent hairlines, drawn into the existing 1 px borders. */
+.dashboard-app .topbar { border-image: linear-gradient(90deg, var(--hair) 6%, #7fe9ff4d 28%, #b9a6ff66 50%, #f7a1f54d 72%, var(--hair) 94%) 1; }
+.dashboard-app .dashboard-section > .panel-heading,
+.dashboard-app .settings-heading { border-image: linear-gradient(90deg, #7fe9ff47, #b9a6ff33 34%, var(--hair) 70%) 1; }
+
+/* 6 Keyboard focus: the ring stays a 2 px solid outline; buttons add a halo. */
+.dashboard-app :is(button, input, select, [tabindex]):focus-visible { outline-color: var(--y2k-cyan); }
+.dashboard-app button:focus-visible:not(.emergency-button, .section-toggle) { box-shadow: 0 0 8px 4px #b9a6ff3d; }
+.dashboard-app .action-button.primary:focus-visible { box-shadow: inset 0 1px #ffffff8c, inset 0 -1px #0000001f, 0 0 8px 4px #b9a6ff3d; }
+.dashboard-app .motion-throttle input[type="range"]:focus-visible { outline-color: var(--y2k-cyan); }
+.dashboard-app .slider-stack input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--glass), 0 0 0 4px var(--y2k-cyan), 0 0 10px 5px #b9a6ff4d; }
+.dashboard-app .slider-stack input[type="range"]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 2px var(--glass), 0 0 0 4px var(--y2k-cyan), 0 0 10px 5px #b9a6ff4d; }
+
+/* 7 Deep navy glow, only in the empty space behind the opaque panels. Dim text
+   keeps 5.2:1 or more wherever the glow could reach behind it. */
+.dashboard-app .dashboard-layout :is(.slider-column, .control-column) { background: var(--y2k-glow), var(--void); }
+.dashboard-app .mode-rail { background: radial-gradient(ellipse 170% 42% at 50% 104%, #1a2b4f99, #1a2b4f00 74%), #16191e; }

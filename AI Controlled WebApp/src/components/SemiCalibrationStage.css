@@ -1,0 +1,294 @@
+/* Semi-automatic calibration click stage (SemiCalibrationStage.tsx): modal above every panel and
+   the floating camera window (210), below only the hover magnifier (2000). */
+.semical-stage {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.semical-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  width: min(1680px, calc(100vw - 24px));
+  height: min(980px, calc(100vh - 24px));
+  padding: 14px;
+  color: var(--text, #e9ecf1);
+  border: 1px solid var(--line-strong, #ffffff24);
+  border-radius: 2px;
+  background: var(--surface, #191c22);
+  box-shadow: 0 12px 40px #0008;
+}
+
+.semical-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.semical-header > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 220px;
+}
+
+.semical-counts,
+.semical-dim {
+  color: var(--muted, #a5acb9);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.semical-phase {
+  flex: 1;
+  padding: 6px 10px;
+  color: var(--text, #e9ecf1);
+  border: 1px solid var(--line, #ffffff10);
+  border-radius: 2px;
+  background: var(--surface-2, #20242c);
+  font-size: 13px;
+}
+
+.semical-phase.phase-waiting { border-color: #5ff2ff55; }
+.semical-phase.phase-review { border-color: var(--go-line, #99d6b645); }
+.semical-phase.phase-stopped { border-color: #e6c58766; }
+
+.semical-icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  color: var(--muted, #a5acb9);
+  border: 1px solid var(--line-strong, #ffffff24);
+  border-radius: 2px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.semical-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 14px;
+  min-height: 0;
+}
+
+.semical-frame {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-height: 0;
+}
+
+.semical-image-wrap {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  background: #0b0d10;
+}
+
+/* The frame fills the area at its own aspect (letterboxed); the click and magnifier mapping
+   (lib/ImagePointer.ts) honours object-fit, so a click on a bar records nothing. */
+.semical-image {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  cursor: crosshair;
+  user-select: none;
+  touch-action: none;
+}
+
+.semical-image.locked { cursor: progress; }
+
+.semical-mark {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border: 2px solid;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px #000a;
+  pointer-events: none;
+}
+
+.semical-mark.mark-predicted { border-style: dashed; }
+
+.semical-noframe {
+  display: grid;
+  place-items: center;
+  color: var(--dim, #9099a8);
+  border: 1px dashed var(--line-strong, #ffffff24);
+  font-size: 13px;
+}
+
+.semical-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.semical-chip {
+  min-width: 30px;
+  height: 26px;
+  padding: 0 6px;
+  color: var(--muted, #a5acb9);
+  border: 1px solid var(--line-strong, #ffffff24);
+  border-radius: 2px;
+  background: var(--surface-2, #20242c);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.semical-chip.status-clicked { color: #10251a; border-color: #7dffa8; background: #7dd6a0; }
+.semical-chip.status-skipped { color: var(--dim, #9099a8); text-decoration: line-through; opacity: 0.7; }
+.semical-chip.flagged { color: #2b1a05; border-color: #ffb347; background: #ffb347; }
+.semical-chip.waiting { box-shadow: 0 0 0 1px #5ff2ff; }
+.semical-chip.active { outline: 2px solid #ffffff; outline-offset: 1px; }
+
+.semical-side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.semical-target {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--line, #ffffff10);
+  border-radius: 2px;
+  background: var(--surface-2, #20242c);
+}
+
+.semical-target p {
+  margin: 0;
+  color: var(--muted, #a5acb9);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.semical-target b { color: var(--text, #e9ecf1); font-weight: 600; }
+
+.semical-hint {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.semical-sketch {
+  width: 100%;
+  height: auto;
+  background: #101318;
+  border-radius: 2px;
+}
+
+.semical-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.semical-link {
+  align-self: flex-start;
+  padding: 0;
+  color: #5ff2ff;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.semical-ok { color: var(--go, #99d6b6); }
+.semical-bad { color: #ffb347; }
+.semical-warn { color: var(--amber, #e6c587); }
+
+.semical-note {
+  padding: 8px 10px;
+  color: #ffd5d8;
+  border: 1px solid #ff929959;
+  border-radius: 2px;
+  background: #602a3240;
+  font-size: 12px;
+}
+
+.semical-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.semical-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  color: var(--text, #e9ecf1);
+  border: 1px solid var(--line-strong, #ffffff24);
+  border-radius: 2px;
+  background: #ffffff05;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.semical-actions button:disabled { opacity: 0.45; cursor: default; }
+.semical-actions button:hover:not(:disabled) { border-color: var(--lamp-line, #a2c7fa4d); background: var(--lamp-soft, #a2c7fa18); }
+.semical-actions button.semical-primary { color: var(--go, #99d6b6); border-color: var(--go-line, #99d6b645); background: #99d6b610; }
+.semical-actions.stop { grid-template-columns: 1fr; margin-top: auto; }
+.semical-actions button.semical-emergency { height: 38px; font-weight: 700; }
+
+.semical-report {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  color: var(--muted, #a5acb9);
+  border: 1px solid var(--line, #ffffff10);
+  border-radius: 2px;
+  background: var(--surface-2, #20242c);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.semical-report.ok strong { color: var(--go, #99d6b6); }
+.semical-report.warn strong { color: var(--amber, #e6c587); }
+.semical-report.bad strong { color: #ff9299; }
+/* A saved calibration's quality warnings (what used to reject it), with their numbers. */
+.semical-problems { margin: 0; padding-left: 16px; color: var(--amber, #e6c587); }
+.semical-reject {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  margin-top: 4px;
+  padding: 0 10px;
+  color: #ffd5d8;
+  border: 1px solid #ff929959;
+  border-radius: 2px;
+  background: #ff92990f;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.semical-reject:disabled { opacity: 0.45; cursor: default; }
+.semical-reject:hover:not(:disabled) { background: #ff92991f; }
+
+@media (max-width: 900px) {
+  .semical-body { grid-template-columns: 1fr; }
+}

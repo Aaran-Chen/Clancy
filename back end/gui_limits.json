@@ -1,0 +1,39 @@
+{
+  "slider_limit_mode": "ordered_raw_v2",
+  "target_limits_cm": {
+    "xy": 44.42,
+    "z": 53.047
+  },
+  "motor_raw_limits": {
+    "shoulder_pan": {
+      "min": 2163,
+      "max": 797,
+      "arc_inverted": false
+    },
+    "shoulder_lift": {
+      "min": 1463,
+      "max": 3152,
+      "arc_inverted": true
+    },
+    "elbow_flex": {
+      "min": 487,
+      "max": 2698,
+      "arc_inverted": false
+    },
+    "wrist_flex": {
+      "min": 3506,
+      "max": 1748,
+      "arc_inverted": false
+    },
+    "wrist_roll": {
+      "min": 374,
+      "max": 571,
+      "arc_inverted": true
+    },
+    "gripper": {
+      "min": 642,
+      "max": 2242,
+      "arc_inverted": false
+    }
+  }
+}

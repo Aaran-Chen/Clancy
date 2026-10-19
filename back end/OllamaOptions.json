@@ -1,0 +1,23 @@
+{
+  "_comment": "Shared by the web app (App.tsx) and the bridge (object_locator.py). Every caller must send the same num_ctx and num_batch through Ollama's native /api/chat, or Ollama reloads the model (8-15 s). 32768 fits the largest recorded task prompts with headroom and leaves ~10 GB of VRAM free, unlike the desktop app's 262144 default.",
+  "_message_layout": "split: one native message per original content part, in the original order: text parts as {role, content: text}, image parts as {role, content: \"\", images: [base64 without the data: prefix]}. This reproduces the /v1 endpoint's token counts and replies exactly (1103 tokens on recorded grounding frames). Merging text and images into one message puts the image before the text (1098 tokens) and made qwen3.6 reply in code fences with duplicate keys, silently dropping objects in 3 of 6 frames (vision lane B1, scratchpad fix/B1/LayoutCheck.py).",
+  "message_layout": "split",
+  "_model": "The web app tries this model first (if installed with vision), then the largest vision model. qwen3.8:27b over qwen3.6 (2026-10-01 replay of 20 recorded check-ins, scratchpad modeleval): NEXT STEP copied exactly 93% vs 71%, invented moves 2/40 vs 10/40; about 3.8 s vs 1.7 s per call, 16 GiB vs 22 GiB VRAM at num_ctx 32768. The bridge grounds with whatever model the app sends.",
+  "model": "qwen3.8:27b",
+  "num_ctx": 32768,
+  "num_batch": 1024,
+  "keep_alive": "30m",
+  "_router": "Nimble (Ollama >= 0.35, typed /v1/systemone choice) picks what the main model gets per prompt: text (prompt only), camera (prompt + one colour frame, no /locate or depth) or camera_depth (the task path: frame, /locate measurements, depth map, approvals). text and camera replies cannot propose motion. Check-ins, answers to the AI, a task or motion under way, objects to act on, motion words, arm state and coordinates always get camera_depth; scene words at least camera. An uncertain (<0.9) Nimble answer keeps more inputs. A missing, old, cold, warming, slow (router_timeout_ms, at most 1500), invalid or failed router falls back to a rule classifier (AiPromptRouter.ts RuleRoute, never below the safety floor): clear general questions, writing and greetings with no scene, arm, object, colour or position words get text, clear live-scene questions with no positions or sizes get camera, everything else camera_depth. Warm-up has its own deadline (router_warmup_timeout_ms).",
+  "router_enabled": true,
+  "router_model": "nimble",
+  "router_timeout_ms": 800,
+  "router_warmup_timeout_ms": 60000,
+  "_router_vram": "32 GB GPU: qwen3.8:27b ~17.5 GB at num_ctx 32768 + nimble ~9.5 GB (+ ~1 GB cache) = ~28 GB, leaving ~4 GB for the depth server and the desktop. router_keep_alive (2h) keeps Nimble loaded after the page's last use (each decision renews it); while someone uses the page (a key, click, scroll or pointer move within 15 min) the page re-warms it in the background 5 min before it would unload, or at once when Ollama restarted or evicted it, so it unloads at most router_keep_alive + 15 min after the page was last used (close the page, or set a shorter value such as 30m, to get the ~10 GB back sooner for games). The dev server warms it at start and whenever Ollama comes back up, with router_startup_keep_alive (30m) so a dev server nobody opens frees it again; SO101_ROUTER_WARMUP=0 turns that off. Never set -1 (pinned forever). The router does not load its model while the loaded models plus it (1.1 x its size) would exceed router_vram_budget_gb (0 turns the check off), so it never makes Ollama evict the main model; it then falls back to camera_depth. If `ollama ps` shows the main model being reloaded, lower the budget (the depth server or another GPU program needs more) or set router_enabled false.",
+  "router_keep_alive": "2h",
+  "router_startup_keep_alive": "30m",
+  "router_vram_budget_gb": 29,
+  "_locate_mode": "How the bridge's /locate finds objects (object_locator.py LOCATE_MODES). single_call: ONE vision call lists every object as a box (the task's object first, with its outline) and depth measures, trims and checks each box; one strict task query follows only when that call gives the task's object no box or its box holds nothing in depth. vlm: the earlier path (up to 3 voted full-frame samples, the task query, zoom-refines: 3-13 calls, 2-53 s a /locate on the 2026-10-03/14 recordings). Captures without depth always take vlm. Restart the bridge after changing it.",
+  "locate_mode": "single_call",
+  "_capture_countdown": "Optional scene-arrangement delay for new physical tasks. Zero captures as soon as the arm is verified still; camera and motion safety checks are unchanged.",
+  "capture_countdown_seconds": 0
+}

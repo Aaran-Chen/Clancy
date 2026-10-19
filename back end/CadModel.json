@@ -1,0 +1,419 @@
+{
+  "Name": "SO-101 follower",
+  "SourceCommit": "eecbe3e0a9ebb23e25ad7b2759b03884c6660903",
+  "Source": "https://github.com/TheRobotStudio/SO-ARM100",
+  "Units": "cm",
+  "Root": "base_link",
+  "ToolLink": "gripper_frame_link",
+  "CadToModel": [
+    [
+      0.0,
+      -1.0,
+      0.0,
+      -8.97657e-07
+    ],
+    [
+      1.0,
+      0.0,
+      0.0,
+      -3.8835300000000004
+    ],
+    [
+      0.0,
+      0.0,
+      1.0,
+      -6.239999999999999
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "Visuals": [
+    {
+      "Name": "base_link__0",
+      "Link": "base_link",
+      "Servo": false
+    },
+    {
+      "Name": "base_link__1",
+      "Link": "base_link",
+      "Servo": false
+    },
+    {
+      "Name": "base_link__2",
+      "Link": "base_link",
+      "Servo": true
+    },
+    {
+      "Name": "base_link__3",
+      "Link": "base_link",
+      "Servo": false
+    },
+    {
+      "Name": "shoulder_link__0",
+      "Link": "shoulder_link",
+      "Servo": true
+    },
+    {
+      "Name": "shoulder_link__1",
+      "Link": "shoulder_link",
+      "Servo": false
+    },
+    {
+      "Name": "shoulder_link__2",
+      "Link": "shoulder_link",
+      "Servo": false
+    },
+    {
+      "Name": "upper_arm_link__0",
+      "Link": "upper_arm_link",
+      "Servo": true
+    },
+    {
+      "Name": "upper_arm_link__1",
+      "Link": "upper_arm_link",
+      "Servo": false
+    },
+    {
+      "Name": "lower_arm_link__0",
+      "Link": "lower_arm_link",
+      "Servo": false
+    },
+    {
+      "Name": "lower_arm_link__1",
+      "Link": "lower_arm_link",
+      "Servo": false
+    },
+    {
+      "Name": "lower_arm_link__2",
+      "Link": "lower_arm_link",
+      "Servo": true
+    },
+    {
+      "Name": "wrist_link__0",
+      "Link": "wrist_link",
+      "Servo": true
+    },
+    {
+      "Name": "wrist_link__1",
+      "Link": "wrist_link",
+      "Servo": false
+    },
+    {
+      "Name": "gripper_link__0",
+      "Link": "gripper_link",
+      "Servo": true
+    },
+    {
+      "Name": "gripper_link__1",
+      "Link": "gripper_link",
+      "Servo": false
+    },
+    {
+      "Name": "moving_jaw_so101_v1_link__0",
+      "Link": "moving_jaw_so101_v1_link",
+      "Servo": false
+    }
+  ],
+  "Joints": [
+    {
+      "Name": "shoulder_pan",
+      "Parent": "base_link",
+      "Child": "shoulder_link",
+      "Type": "revolute",
+      "Origin": [
+        [
+          -0.9999999999964793,
+          -2.653589793343387e-06,
+          -7.0414969660857844e-12,
+          3.8835300000000004
+        ],
+        [
+          -2.65358979335273e-06,
+          0.9999999999929585,
+          2.653589793343387e-06,
+          -8.97657e-07
+        ],
+        [
+          -4.18253e-17,
+          2.65358979335273e-06,
+          -0.9999999999964793,
+          6.239999999999999
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "Axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "Limits": {
+        "effort": "10",
+        "velocity": "10",
+        "lower": "-1.91986",
+        "upper": "1.91986"
+      }
+    },
+    {
+      "Name": "shoulder_lift",
+      "Parent": "shoulder_link",
+      "Child": "upper_arm_link",
+      "Type": "revolute",
+      "Origin": [
+        [
+          -3.673205103416066e-06,
+          0.9999999999865075,
+          3.673205103391286e-06,
+          -3.03992
+        ],
+        [
+          0.0,
+          -3.673205103416066e-06,
+          0.9999999999932537,
+          -1.82778
+        ],
+        [
+          0.9999999999932537,
+          3.673205103391286e-06,
+          1.3492435731761833e-11,
+          -5.42
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "Axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "Limits": {
+        "effort": "10",
+        "velocity": "10",
+        "lower": "-1.74533",
+        "upper": "1.74533"
+      }
+    },
+    {
+      "Name": "elbow_flex",
+      "Parent": "upper_arm_link",
+      "Child": "lower_arm_link",
+      "Type": "revolute",
+      "Origin": [
+        [
+          -3.673205103416066e-06,
+          -0.9999999999932537,
+          -3.6361121148444215e-16,
+          -11.257
+        ],
+        [
+          0.9999999999932537,
+          -3.673205103416066e-06,
+          8.742996643873405e-16,
+          -2.8000000000000003
+        ],
+        [
+          -8.74301e-16,
+          -3.63608e-16,
+          1.0,
+          1.7376299999999998e-14
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "Axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "Limits": {
+        "effort": "10",
+        "velocity": "10",
+        "lower": "-1.69",
+        "upper": "1.69"
+      }
+    },
+    {
+      "Name": "wrist_flex",
+      "Parent": "lower_arm_link",
+      "Child": "wrist_link",
+      "Type": "revolute",
+      "Origin": [
+        [
+          -3.673205103416066e-06,
+          0.9999999999932537,
+          -4.024563185971374e-15,
+          -13.489999999999998
+        ],
+        [
+          -0.9999999999932537,
+          -3.673205103416066e-06,
+          -8.673472169598175e-16,
+          0.52
+        ],
+        [
+          -8.67362e-16,
+          4.02456e-15,
+          1.0,
+          3.62355e-15
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "Axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "Limits": {
+        "effort": "10",
+        "velocity": "10",
+        "lower": "-1.65806",
+        "upper": "1.65806"
+      }
+    },
+    {
+      "Name": "wrist_roll",
+      "Parent": "wrist_link",
+      "Child": "gripper_link",
+      "Type": "revolute",
+      "Origin": [
+        [
+          -0.9988153870948911,
+          -0.04866027635002569,
+          2.8323289687943878e-06,
+          5.551119999999999e-15
+        ],
+        [
+          2.6504463166479907e-06,
+          3.8023295160936047e-06,
+          0.9999999999892587,
+          -6.11
+        ],
+        [
+          -0.04866027636027247,
+          0.9988153870916694,
+          -3.668853777260365e-06,
+          1.81
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "Axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "Limits": {
+        "effort": "10",
+        "velocity": "10",
+        "lower": "-2.74385",
+        "upper": "2.84121"
+      }
+    },
+    {
+      "Name": "gripper",
+      "Parent": "gripper_link",
+      "Child": "moving_jaw_so101_v1_link",
+      "Type": "revolute",
+      "Origin": [
+        [
+          0.9999999999999987,
+          -5.242839999965148e-08,
+          1.9116473644394835e-13,
+          2.02
+        ],
+        [
+          -1.415529999999998e-15,
+          -3.673205103416066e-06,
+          -0.9999999999932537,
+          1.8800000000000001
+        ],
+        [
+          5.2428399999999973e-08,
+          0.9999999999932524,
+          -3.673205103416061e-06,
+          -2.34
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "Axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "Limits": {
+        "effort": "10",
+        "velocity": "10",
+        "lower": "-0.174533",
+        "upper": "1.74533"
+      }
+    },
+    {
+      "Name": "gripper_frame_joint",
+      "Parent": "gripper_link",
+      "Child": "gripper_frame_link",
+      "Type": "fixed",
+      "Origin": [
+        [
+          -0.9999999999964793,
+          0.0,
+          2.65358979335273e-06,
+          -0.79
+        ],
+        [
+          0.0,
+          1.0,
+          0.0,
+          -0.0218121
+        ],
+        [
+          -2.65358979335273e-06,
+          0.0,
+          -0.9999999999964793,
+          -9.81274
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "Axis": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "Limits": {}
+    }
+  ]
+}

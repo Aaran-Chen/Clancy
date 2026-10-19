@@ -1,0 +1,75 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Logs
+*.log
+# Orbbec SDK log folder (OrbbecCamera.py keeps it to errors only)
+Log/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Runtime artifacts — camera frames saved by the AI vision loop
+back end/captures/
+
+# Local machine state
+.claude/settings.local.json
+.backend-python.txt
+
+# self-calibration scratch session (regenerated every run)
+back end/selfcal_session.json
+back end/TestArtifacts/
+
+# CodeGraph local code index
+.codegraph/
+AI Controlled WebApp/public/LocalDisplayPreferences.json
+
+# Machine-local access state (back end/RemoteAccess.py): the remote password's hash
+# (SetRemotePassword.py) and whether the arm was disconnected on purpose. Never commit them.
+back end/RemotePassword.json*
+back end/ConnectIntent.json*
+
+# Secrets and keys: never commit them
+.env
+.env.*
+*.pem
+*.key
+
+# Recorded media
+*.mp4
+*.webm
+*.wav
+
+# Agent scratch space (worktrees and untracked working folders)
+.claude/worktrees/
+.claude/Audit/
+.claude/Calibration/
+.claude/GeneralizeScratch/
+.claude/GraspSpecEvidence/
+.claude/Gravity/
+.claude/NoDeskScratch/
+.claude/SpeedMeasurement/
+.claude/WebcamProbe/
+.claude/Y2KShots/
+.claude/settings.local.json.doctor-backup-*
+
+# Calibration backups made by hand before an edit
+back end/camera_calibration.json.bak-*
+
+# OS, editor and tool clutter
+.DS_Store
+Thumbs.db
+.idea/
+test-results/
+.vite/
+
+# Runtime output
+back end/recordings/
+back end/logs/

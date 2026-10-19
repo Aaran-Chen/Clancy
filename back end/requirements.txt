@@ -1,0 +1,13 @@
+pyserial>=3.5,<4.0
+feetech-servo-sdk>=1.0.0,<2.0.0
+fastapi>=0.115.0,<1.0.0
+uvicorn>=0.30.0,<1.0.0
+websockets>=13.0,<17.0
+# Camera calibration + calibrated object localization (calibration.py, object_locator.py)
+opencv-python>=4.8,<5.0
+numpy>=1.26
+scipy>=1.11,<2.0
+# Orbbec Gemini 335L depth camera (OrbbecCamera.py); the bridge runs without it
+pyorbbecsdk2>=2.1,<3
+# Continuous session video (SessionRecorder.py) and its review tool (ReviewRecording.py)
+av>=12,<15

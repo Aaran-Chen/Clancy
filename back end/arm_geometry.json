@@ -1,0 +1,24 @@
+{
+  "name": "SO101Cad",
+  "model": "SO101Cad",
+  "units": "cm",
+  "status": "official_cad_geometry",
+  "ik": {
+    "target_tip": "gripper_tip",
+    "zero_reference": "CadAlignment.ReferenceRaw",
+    "default_elbow": "up",
+    "servo_signs": {
+      "shoulder_pan": -1,
+      "shoulder_lift": 1,
+      "elbow_flex": -1,
+      "wrist_flex": -1
+    },
+    "raw_velocity_signs": {
+      "shoulder_pan": 1
+    },
+    "display_signs": {
+      "shoulder_lift": 1
+    },
+    "notes": "CAD joint axes and offsets come from CadModel.json; servo reference is independent of Home."
+  }
+}

@@ -1,0 +1,24 @@
+# Dependencies for "Depth Server.py" (the UniDepth metric-depth server).
+# Kept separate from requirements.txt so the lightweight arm bridge can be
+# installed without PyTorch/CUDA.
+#
+# PyTorch and UniDepth are NOT listed here because they must match your CUDA
+# build and UniDepth installs from source. Install them first, in order:
+#
+#   1) PyTorch matching your CUDA (see https://pytorch.org), e.g. CUDA 12.1:
+#        pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#
+#   2) UniDepth from source:
+#        git clone https://github.com/lpiccinelli-eth/UniDepth
+#        cd UniDepth && pip install -e .
+#
+#   3) then:  pip install -r requirements-depth.txt
+#
+# Run:  python "Depth Server.py"   (the space in the name rules out
+#       the uvicorn module form; the __main__ block binds 0.0.0.0:8001)
+
+fastapi
+uvicorn[standard]
+pillow
+numpy
+matplotlib

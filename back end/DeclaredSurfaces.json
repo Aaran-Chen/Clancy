@@ -1,0 +1,15 @@
+{
+  "Version": 1,
+  "About": "Support surfaces besides the desk, entered by hand: a platform or box top open above, or a shelf board with another board above it. Display frame (the AI's), cm: +X the arm's left, +Y away from the robot, +Z up; the desk is Z -2.3 (WorkspaceFrame.json TableZCm), so a box 15 cm tall on the desk has TopZCm 12.7. The bridge (object_locator, DeclaredSurfaces.py) measures objects on a surface only inside one declared here, and the web app (lib/DeclaredSurfaces.ts) holds a task's tip and gripper above the surface its object stands on. Frame: cart (the cart parked; the only one today). Copy Example into Surfaces and edit it; Enabled false keeps an entry without using it.",
+  "Surfaces": [],
+  "Example": {
+    "Name": "box platform",
+    "Kind": "platform",
+    "Enabled": true,
+    "TopZCm": 12.7,
+    "XRangeCm": [-25.0, -3.0],
+    "YRangeCm": [30.0, 44.0],
+    "BoardAboveZCm": null,
+    "Frame": "cart"
+  }
+}

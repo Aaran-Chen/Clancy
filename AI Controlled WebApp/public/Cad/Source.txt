@@ -1,0 +1,13 @@
+SO-101 follower CAD geometry by TheRobotStudio and contributors.
+Source: https://github.com/TheRobotStudio/SO-ARM100
+Commit: eecbe3e0a9ebb23e25ad7b2759b03884c6660903
+Source description: Simulation/SO101/so101_new_calib.urdf
+License: Apache License 2.0, reproduced in LICENSE.txt.
+
+SO101Parts.glb is a derived display asset. Original STL visual origins are baked
+into link-local meshes; original joint transforms are preserved separately in
+the application's CadModel.json. The application applies its own materials.
+
+SO101.urdf is a source reference. Its source STL dependencies are available in
+the original repository and the Downloads/SO101Cad package; this GUI asset
+directory is not a standalone URDF distribution.

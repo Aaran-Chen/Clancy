@@ -1,0 +1,2064 @@
+================================================================================
+AI CONTROLLED ARM (WEB GUI) - HOW THIS VERSION WORKS
+================================================================================
+
+This document explains, in detail, exactly how the current "AI Controlled
+WebApp" works: every moving part, how the pieces talk to each other, the data
+that flows between them, the coordinate systems, and the full AI request ->
+approval -> motion pipeline.
+
+It describes THIS build as it actually is in the code today. Where a feature
+exists in the code but is not wired into the live flow, that is called out.
+
+If you only read one section, read section 2 (Big Picture) and section 8
+(The AI Loop).
+
+Companion docs:
+  - README.md ................ how to install and run it
+  - ../../APPLICATION_OVERVIEW.txt . the older behavioural spec of the desktop GUI
+
+
+--------------------------------------------------------------------------------
+TABLE OF CONTENTS
+--------------------------------------------------------------------------------
+  1.  What this app is
+  2.  Big picture: three programs
+  3.  The files and what each one does
+  4.  Startup sequence (open page -> ready)
+  5.  Coordinate systems (model / display / visual)  <- the tricky part
+  6.  The 3D preview and inverse kinematics
+  7.  The manual controls (target, send, home, torque, elbow, e-stop)
+  8.  The AI loop, step by step
+  9.  The Python bridge in detail
+  10. Data files the bridge reads and writes
+  11. Configuration, ports, and addresses
+  12. Safety model
+  13. Glossary
+
+
+================================================================================
+1. WHAT THIS APP IS
+================================================================================
+
+A web page for controlling a 6-joint SO-101 robotic arm by chatting with a
+local AI model. The operator types a request in plain language
+("move 5 cm to the left and open the gripper"). The AI replies with a structured
+motion proposal. The app previews that motion on a 3D model and checks whether it
+is physically reachable. The arm only moves after the human clicks **Approve**.
+
+The 6 joints, in order, are:
+
+    shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper
+
+Four of them (shoulder_pan, shoulder_lift, elbow_flex, wrist_flex) participate in
+inverse kinematics. wrist_roll and gripper are controlled directly, not by IK.
+
+
+================================================================================
+2. BIG PICTURE: THREE PROGRAMS
+================================================================================
+
+Nothing works in isolation. Three programs run at once:
+
+  (A) THE WEB APP  - this folder. React + TypeScript, built/served by Vite.
+                     Runs in the browser at http://127.0.0.1:5181.
+                     This is the UI and the "brain" of the AI conversation.
+
+  (B) THE PYTHON BRIDGE - "back end/bridge_server.py" at the repo root.
+                     A FastAPI server at http://127.0.0.1:8000.
+                     It is the ONLY thing that touches the physical arm. It
+                     opens the USB serial port, reads/writes the motors, and
+                     does the heavy kinematics math.
+
+  (C) OLLAMA - a local AI model server, by default on this PC at
+                     http://127.0.0.1:11434 (OLLAMA_BASE_URL points the dev
+                     server's proxy elsewhere). It receives chat messages and
+                     returns the AI's text reply.
+
+How they talk:
+
+    Browser (web app)
+       |
+       |  WebSocket  ws://127.0.0.1:8000/ws      <- live arm state + commands
+       |  HTTP       http://127.0.0.1:8000/...   <- IK preview, ports, notepad
+       v
+    Python bridge --(USB serial, Feetech SCS bus, 1 Mbit/s)--> SO-101 arm
+
+    Browser (web app)
+       |
+       |  HTTP  /ollama/api/chat  (proxied by Vite to Ollama's native API)
+       v
+    Ollama server --> the language model
+
+Why the Vite proxy for Ollama? A browser cannot POST directly to a different
+host/port without that host sending CORS headers. So Vite's dev server proxies
+any request beginning with "/ollama" to OLLAMA_BASE_URL and strips the prefix.
+The browser thinks it is talking to its own origin; Vite forwards it. See
+vite.config.ts.
+
+The bridge, by contrast, takes the web app's page directly (CORS allows its
+origin) and decides who may use it: this PC freely, another device only with
+the remote password, a page from any other site never (section 9, ACCESS).
+
+
+================================================================================
+3. THE FILES AND WHAT EACH ONE DOES
+================================================================================
+
+  index.html              The HTML shell. Loads src/main.tsx.
+
+  src/main.tsx            React entry point. Mounts <App/> into #root.
+
+  src/App.tsx             THE app. About 6800 lines. Contains:
+                            - all React state and effects
+                            - the WebSocket connection to the bridge
+                            - the entire AI request/parse/validate/revise loop
+                            - all the response-parsing helpers
+                            - the top-level layout (JSX) and every button handler
+
+  src/components/
+    ArmCanvas.tsx          A one-line re-export of CadCanvas.tsx, the interactive
+                           3D view: three.js with orbit controls, drawing the
+                           robot's CAD model, the current arm, the target IK
+                           preview and the AI proposal preview. Lets you drag the
+                           tip to set a target and scroll to change wrist pitch.
+    ServoPanel.tsx         The six joint sliders. Each shows raw motor position,
+                           lets you drag to move a joint, set min/max limits +
+                           arc inversion, and set a "current angle" reference
+                           (shown only: section 7, JOINT SLIDERS).
+    AccessCard.tsx         On another device: asks for the arm password once.
+
+  src/lib/
+    robotModel.ts          The math library (no UI). Servo arc math, raw<->angle
+                           conversions, forward kinematics, a local IK solver,
+                           wrist-pitch reachability, and the coordinate-frame
+                           transforms (model/display/visual). Shared by App.tsx,
+                           ArmCanvas, and ServoPanel.
+    AiChain.ts             The CHAINED MOTION's pure rules (section 8, STEP 4,
+                           7 and 10): reading gripper_before / gripper_after,
+                           which gripper action and tip move may follow each
+                           other on one approval (ChainRefusalReason), and how
+                           a chain's run is told to the model.
+    GraspPlanWorker.ts     Runs the grasp planner (GraspPlan.ts) in a Web
+                           Worker, so Stop and hold and Emergency Shutoff stay
+                           responsive while a grasp is planned (it held the
+                           page up to 11.8 s before 2026-10-07).
+    RemoteAccess.ts        On another device: sends the arm password with every
+                           request to the robot's PC and as the first /ws
+                           message. On this PC it does nothing.
+    SessionVideo.ts        Tells the dev server when an AI task starts, still
+                           runs (every 15 s) and ends, so the session recorder
+                           films only tasks (section 4, step 0).
+    BridgeCommandGate.ts   Which bridge the page accepts: bridge_version must be
+                           back end/BridgeVersion.json's, else AI tasks wait.
+
+  src/styles.css          All styling.
+
+  vite.config.ts          Dev server config: port 5181 (strictPort), the
+                           "/ollama" -> Ollama proxy and the dev server's own
+                           routes (/bridge-launch, /session-log, /depth-server).
+                           All of them follow the bridge's access rule
+                           (scripts/RemoteAccess.ts, before every route and
+                           every one of Vite's own; see 9, ACCESS).
+
+  scripts/run-app.ps1     One-command launcher: starts the Python bridge, then
+                           the Vite web app, then opens the browser.
+
+  docs/                    This file, plus a screenshot.
+
+
+================================================================================
+4. STARTUP SEQUENCE (OPEN PAGE -> READY)
+================================================================================
+
+When the page loads, App.tsx runs several effects:
+
+  0. RECORDING: The dev server starts back end/SessionRecorder.py (the depth
+     camera's and the webcam's video while an AI task runs, kept 7 days; the
+     page switches it through POST /session-log/recording) and logs every
+     /ollama request and reply, plus the
+     app's AI events (POST /session-log/event), to
+     back end/captures/<date>/recording/. See the README's Session recording.
+     Every image a request carries (a /v1 data URL, or the bare base64 in a
+     native /api/chat message's "images" list) is stored once in images/ and
+     referenced by name; a warm-up is marked "preload": true; an event's own
+     "kind" (a snap's "pitch", a bridge fault's "protection_trip") is kept as
+     "event_kind", since every event record is kind "app". back end/
+     ReviewRecording.py timeline reads all of it, both the /v1 records before
+     2026-09-29 evening and the native ones after (with token counts, and a
+     MODEL LOAD line per warm-up), the app's events (snap, bridge_refused,
+     task_object_bound, task_end, bridge_fault, ...) and the bridge's own
+     bridge_events.jsonl (motion faults, protection trips, motion aborts,
+     grasp holds and serial link drops; section 9).
+
+  1. CAMERA: Picks the live-view source (Settings > Camera source, default Auto).
+     Auto uses the Orbbec Gemini 335L depth camera whenever the bridge streams
+     it: frames are pulled from GET /depthcam/frame.jpg into a canvas that feeds
+     the <video>, and each frame keeps its bridge frame number. Otherwise
+     getUserMedia() opens a webcam, never the Orbbec (the bridge owns it). When
+     you submit an AI prompt the app captures the current frame and attaches
+     depth: the depth camera's measured depth for that exact frame, or the
+     UniDepth server's estimate for a webcam frame.
+
+  2. PICK AN AI MODEL (loadModel effect):
+       First choice: the model back end/OllamaOptions.json names ("model":
+       qwen3.8:27b) if it is installed and /api/show lists vision for it; then
+       the largest installed model whose /api/show capabilities include vision
+       (GET /ollama/api/tags, then /api/show). Otherwise:
+       a. GET /ollama/api/ps  - asks Ollama which models are already loaded in
+          memory. If one is loaded, it is selected (avoids a slow fresh load).
+       b. If none are loaded, GET /ollama/v1/models - lists installed models and
+          picks the first one.
+       c. The chosen model id is stored in state and shown as "<model> ready".
+       d. WARM-UP: once AI mode shows (at load, or when you switch to it), the
+          app sends one POST /ollama/api/chat with no messages and the same
+          num_ctx, num_batch and keep_alive as every model call (STEP 2). Ollama
+          only loads the model (done_reason "load", ~20 ms when it is already
+          loaded), so the first task no longer waits 6-19 s for a cold load
+          inside its first call (07:57 on 2026-09-29: the task ended 2 s before
+          the reply came). Once per page load and per model; Manual mode loads
+          nothing, since the model then holds ~16 GB of VRAM (qwen3.8:27b at
+          num_ctx 32768; qwen3.6 took ~22 GB) until keep_alive (30 min) runs
+          out. A typed task after 25 min without a model call
+          warms it again while the arm settles (and while the optional capture
+          countdown runs, when capture_countdown_seconds is not 0). The
+          statistics then show the context window it was loaded with (/api/ps).
+          The session record keeps each warm-up, marked "preload": true.
+
+  3. CONNECT TO THE BRIDGE (connectBridge):
+       - Opens WebSocket ws://127.0.0.1:8000/ws (on another device, the PC's
+         address). On another device the page first sends {"type": "auth",
+         "password": ...} and is live only once the bridge answers
+         {"type": "access", "ok": true}; a wrong or missing password shows the
+         Arm password card instead (section 9, ACCESS).
+       - On open: marks the bridge "live", calls GET /ports to populate the
+         serial-port dropdown.
+       - The bridge immediately sends a "state" snapshot, and then keeps sending
+         one ~30 times per second.
+       - The automatic connect: on this PC, a live bridge with the arm not
+         connected gets "connect" by itself, unless the arm was disconnected
+         on purpose (Disconnect or an Emergency stop, from any page: the
+         state's disconnected_on_purpose, kept until a Connect click). On
+         another device the page never connects by itself; its Connect button
+         sends "connect" with "explicit": true.
+       - The version check: the state's bridge_version must equal
+         back end/BridgeVersion.json's (the page was built with it). An older
+         bridge gets a loud "Bridge update required" banner and AI tasks wait
+         (Load bridge update in the Motion panel, or RestartBridge.ps1); Home,
+         Hold, Stop and manual moves still work.
+
+  4. LOAD THE NOTEPAD: GET /notepad - fetches the AI's memory text (stored on
+     the bridge, kept across sessions until "Reset AI context" empties it) and
+     loads it into state.
+
+If the bridge is not running, the app falls back to LOCAL PREVIEW MODE: the
+on-screen model still works and the AI still answers, but no hardware moves and
+the joint values are simulated.
+
+
+================================================================================
+5. COORDINATE SYSTEMS (MODEL / DISPLAY / VISUAL)
+================================================================================
+
+This is the single most confusing part of the codebase, so it gets its own
+section. There are THREE coordinate frames for the same physical point. All are
+in centimeters. All conversions live in src/lib/robotModel.ts.
+
+  MODEL space
+      The raw output of forward kinematics. The arm is computed in a radial/Z
+      plane and rotated by the pan angle:
+          x = radial * sin(pan),  y = radial * cos(pan),  z = height
+      The internal target (the `target` state, type TargetPose) is stored in
+      MODEL space. This is the frame the IK solver works in.
+
+  DISPLAY space
+      Human-friendly coordinates with a fixed offset so the "home" pose lands at
+      a known nice number (HOME_DISPLAY_POSITION_CM = x -13.97, y 12.065,
+      z -3.81). Conversion:
+          display = mirrorDisplayPoint(model)
+                  = applyDisplayHomeOffset( mirrorX(model) )
+      In display semantics the AI and the operator think in:
+          +X = left,   +Y = farther away,   +Z = up
+      The numbers shown to the AI in its prompt are DISPLAY coordinates.
+
+  VISUAL space
+      What the 3D canvas draws and what the X/Y/Z number boxes show. It flips X
+      once more so dragging on screen feels correct:
+          visual = visualPointFromDisplayPoint(display)   // x -> -x
+      The Target X/Y/Z input fields are bound to VISUAL coordinates.
+
+Key conversion functions (robotModel.ts):
+      mirrorDisplayPoint(model)        -> display
+      modelPointFromDisplayPoint(disp) -> model         (inverse)
+      visualPointFromDisplayPoint(p)   -> flips X (its own inverse)
+      applyDisplayHomeOffsetToJoints() -> shifts bridge/forward-kinematics joints
+                                         into display space for drawing
+
+Practical rule:
+      - IK math and the stored target  -> MODEL space
+      - Talking to the AI / operator    -> DISPLAY space (+X left, +Y far, +Z up)
+      - Drawing + the input boxes       -> VISUAL space
+
+The wrist pitch is a single angle in degrees and is the same in all frames.
+
+
+================================================================================
+6. THE 3D PREVIEW AND INVERSE KINEMATICS
+================================================================================
+
+FORWARD KINEMATICS (where is the tip, given joint angles?)
+  robotModel.ts -> forwardKinematics(angles). A simple planar chain:
+      base -> shoulder -> elbow -> wrist -> roll -> tip
+  using these measured lengths/zero-angles (the `geometry` object):
+      baseRadial 3.0, baseZ 7.0,
+      upper 11.511 cm (zero 182.49 deg), forearm 13.537 cm (zero 4.236 deg),
+      wrist 6.0 cm (zero -55 deg), tip 10.0 cm.
+  The whole chain is rotated about vertical by shoulder_pan.
+  Max straight-line reach about 48.66 cm. The AI is not given it any more: the
+  arm reaches nowhere near that at the desk (see REACH FACTS in section 8).
+
+INVERSE KINEMATICS (what joint angles reach a target XYZ + wrist pitch?)
+  There are TWO solvers, used in different situations:
+
+  (a) LOCAL solver - robotModel.ts -> solveIkPreview(target, elbowMode, servos).
+      A closed-form 2-link solution in the radial/Z plane after subtracting the
+      wrist+tip offset. Used for the on-screen preview when the bridge is NOT
+      live, and used by the AI feasibility check (section 8). It returns:
+        reachable, errorCm, requested/effective wrist pitch,
+        wristPitchReachable, jointLimitsApplied, and the joint positions.
+      With Explain (the AI validator only), an unreachable pose also gets a
+      failure: one more solve without joint limits tells "out of the arm's
+      reach at this wrist pitch" from "a named joint would leave its range".
+      jointLimitsApplied is true only in the second case; it used to be true
+      for every unreachable pose.
+      "elbow up" vs "elbow down" selects which of the two IK branches to use.
+
+  (b) BRIDGE solver - back end/arm_geometry.py -> solve_tip_ik, called through
+      POST /ik/preview and during a real "send". This is the authoritative
+      solver and uses the loaded arm_geometry.json + the configured joint limits.
+      For the CAD model it delegates to back end/CadKinematics.py, which refines
+      each analytic seed with its own bounded Levenberg-Marquardt fit using an
+      analytic Jacobian over just the pan..roll tool chain (no SciPy): about
+      5 ms per solve and per drag-preview step, 8 ms for an unreachable target.
+
+PREVIEW BEHAVIOUR (App.tsx)
+  - When the bridge is LIVE: on any target/elbow change, the app POSTs to
+    /ik/preview (throttled to ~80 ms, with stale-response guarding via request
+    ids) and draws the bridge's joint solution.
+  - When NOT live: it uses the local solveIkPreview each render.
+  The ArmCanvas draws three things at once: the current arm pose, the target
+  preview (green/red by reachability), and - when the AI has proposed something -
+  the AI proposal preview.
+
+WRIST-PITCH REACHABILITY
+  A given XYZ can be reachable while the requested wrist pitch is not (the wrist
+  link can't point that way and still keep the tip on target). Both solvers can
+  find the CLOSEST reachable wrist pitch instead of failing outright
+  (closestReachableWristPitch). This matters for the AI loop (section 8).
+  "Reachable" means within 0.1 cm and 0.25 deg. The wrist searches select more
+  strictly (src/lib/AutomaticWrist.ts, FindReachableWristTarget): only pitches
+  where the IK converges to 0.02 cm and 0.08 deg, which leaves room for the
+  encoder rounding (up to 0.066 cm and 0.129 deg) that the bridge checks after.
+
+
+================================================================================
+7. THE MANUAL CONTROLS
+================================================================================
+
+These work independently of the AI. All hardware actions require: bridge live +
+arm connected + torque on (the app tells you which is missing).
+
+  SCREEN LAYOUT (components/DashboardLayout.tsx, Dashboard.css)
+      Nothing scrolls, from 1280x720 up: Manual mode is Workspace | Joints |
+      Controls (Current Position, Target, Motion); AI mode is one resizable AI
+      column, holding the conversation and its approval card beside Current
+      Position, Motion and the statistics, then the Workspace. Each panel column
+      is a CSS size container: its sections keep their natural height and
+      compact in two steps as the column gets shorter (1100 and 760 px); the
+      selected joint's dial and the AI reply give up space first (a long reply
+      shows its start and a button for the whole text). Content that still
+      overflows takes the denser steps anyway, then a tighter third one (help
+      text and the assistant's name hidden, lower cards, headings, inputs and
+      buttons), before anything shrinks (FitColumn sets --fit-dense,
+      --fit-compact and --fit-tight on the column). Only if that still
+      overflows (a column dragged to its minimum with the heaviest content) do
+      its panels scale down until they fit, never below 0.8; Clancy's pixel art
+      stays on whole device pixels under that scale too. AI mode's default split
+      follows the window (DefaultAiWeights) until you drag it; Reset widths
+      returns to it. The settings drawer flows into two, three or four columns
+      on shorter windows. TestNoScroll.mjs checks all of this at six window
+      sizes and on a 3840x2160 screen at 225 % (maximised and full screen, and
+      maximised at 110 % and 125 % browser zoom, at their real pixel ratios).
+
+  TARGET X/Y/Z + WRIST PITCH (right column)
+      Type coordinates (VISUAL space) or drag the tip in the 3D view. The target
+      is continuously constrained to reachable space (constrainTargetPose) and
+      previewed.
+
+  SET CURRENT
+      Sets the target to wherever the tip currently is.
+
+  SEND (sendTargetPose)
+      Sends the target to the bridge: a "set_target" command followed by
+      "send_ik". The bridge solves IK and streams the joints to the target.
+
+  HOLD / COAST (toggle_torque)
+      Enables/disables motor torque. Off = the arm is limp (coast). The page
+      sends which button it showed ("enable": true for Hold, false for Coast),
+      so the command means that state, not a toggle: it runs ahead of any
+      command still queued or planning, and Hold pressed while holding stops a
+      motion and holds. Hold holds every joint exactly where it is, also one a
+      hand put outside its slider limits (until 2026-10-07 Hold drove such a
+      joint to its limit, unchecked); only a commanded move brings it back.
+      Such a joint is read on the side of its hold point (or its route's
+      stage start), so a wrist roll held in the middle of its excluded window
+      no longer reads a step of jitter as a turn and coasts (hold-v4). A stop
+      that holds keeps a grasp's squeeze (Coast and the emergency stop let go).
+      Stop and hold goes over POST /motion when the socket is down.
+
+  HOME / SET HOME
+      "go_home" moves to the saved home pose, all six joints: the arm and the
+      wrist roll on one checked route, the gripper opening on the way or
+      closing only once the arm has arrived (the route's last stage moves just
+      the jaws, so an object that stops them is held, not a stall trip). A
+      gripper holding an object (grasp_hold) is left as it is; the status
+      says "Home: gripper left holding the object". Without a bridge the
+      preview shows the whole saved pose ("Home preview"). Until 2026-10-12
+      Home left the wrist roll where it was.
+      "set_home" saves the current physical pose as the new home. Both wait
+      until the arm has stopped (a Set Home mis-clicked during a route used to
+      coast every joint): the bridge refuses them while anything moves.
+
+  ELBOW up/down (toggle_elbow)
+      Switches which IK branch the solver prefers.
+
+  EMERGENCY SHUTOFF (emergency_stop)
+      Sends an emergency stop, cuts torque, clears pending commands, and closes
+      the socket. Works even mid-motion.
+
+  JOINT SLIDERS (ServoPanel)
+      Move one joint directly (bypasses IK). Each slider also has a right-click
+      menu to set its raw min/max limits, invert its arc, and set a "current
+      angle" (gui_angle_raw). That angle is display only: every route, IK seed,
+      tape check and scene envelope uses the measured position (it once moved
+      the reported tip 5.3 cm while routes still left from the measured pose),
+      and AI tasks wait while one is set. Limit changes and the current angle
+      wait until the arm has stopped; narrowing a limit past a holding joint
+      leaves it holding where it is.
+
+  SERIAL PORT dropdown + CONNECT ARM
+      Pick the USB port and connect. Bridge/arm/torque status is shown in the
+      Status panel. Connecting seeds each servo's goal where it is, which
+      energises the arm there. A Connect click is "explicit": the only connect
+      the bridge runs from another device, or after a deliberate disconnect.
+
+  CAMERA CALIBRATION (Settings > Calibrate)
+      Automatic: the arm visits 24 planned poses (bridge /selfcal/poses: reach,
+      basket and clearance checks; no shoulder-load limit since 2026-10-03),
+      each move is send_ik with that pose's plan_id,
+      the app waits until every joint is on target and still, captures 3
+      frames with their joints and depth, and the bridge finds the red tape on
+      the fixed jaw by itself and fits the camera (SelfCalibration.py).
+      Semi-automatic (the same path, SemiCalibrationStage.tsx): at each pose
+      the middle frame freezes full screen and the arm HOLDS the pose until you
+      click the centre of the red tape on the fixed jaw (the face you see, not
+      the fingertip, not the moving jaw), Skip the pose (tape hidden), Retake it
+      (a moment later, settled again, captured again, no move) or press Done
+      early. Only a decision moves the arm on; clicking an earlier frame,
+      Undo and Skip of earlier frames never move it. Stop, Emergency stop, a
+      bridge fault, lost feedback/torque/heartbeat end the run where it is;
+      so do 5 minutes without a click and a servo reaching 55 C (the bridge
+      coasts at 60 C), which end it at that pose. The run never moves the arm
+      to rest by itself: as after an automatic run it holds where it stopped
+      until you move it (Home) or support it and coast. With 6 or more clicks
+      (10 or more recommended) the clicks are fitted (/selfcal/solve source
+      "manual"): each pose gets its residual, poses the fit dropped or that lie
+      far off are flagged (orange) for a re-click, then Fit again. With the
+      depth camera on, clicks need depth under them: 6 or more go to the depth
+      fit (under 10 is a warning); with fewer the camera is fitted from colour
+      alone, without a camera-check baseline, and the warning says so. The run,
+      its frames, clicks and fit reports are archived in
+      captures/<date>/selfcal/runs.
+      Nothing rejects a calibration but you (2026-10-10). Every run that can
+      compute a camera, automatic or semi-automatic, is saved to
+      camera_calibration.json and applied at once; what used to reject a fit
+      (fit error over 0.6 cm, hold-out over 0.9 cm, depth disagreement over
+      1 cm, table accuracy over 1 cm, the table out of view, the camera under
+      5 cm above the table, one gripper tilt, camera motion during the run, its
+      stillness unverifiable, no drift baseline, fewer than 10 poses or clicks,
+      the tape not picked by camera consistency) is a warning with its numbers:
+      in the report ("Saved and applied, with warnings."), in the saved model
+      (quality_problems), in /calibration/status and in the session record
+      (calibration_saved). Reject calibration (the calibration panel's "In use"
+      box, or the click stage's report) asks first, then /selfcal/reject
+      archives the rejected file in its run (UserRejected) and writes back the
+      file it replaced (each save archives that first, CalibrationReplaced);
+      the restored calibration can be rejected in turn. Only a run that
+      computes no camera at all (under 6 usable poses or clicks, poses that do
+      not span 3-D, a blob that never moved, no converging fit, a solver crash)
+      keeps the current calibration: "Could not compute a calibration ...
+      The current calibration is still in use."
+      No baseline: a calibration saved without a drift baseline (the desk not
+      found or not agreeing in depth, or a colour-only fit) is in use, but the
+      camera check answers camera_not_verified for it, so every task that acts
+      on an object stops until a calibration with a baseline is saved or this
+      one is rejected; descriptions, relative jogs and gripper commands work.
+      Why the tape centre: the fit's tape offset keeps the meaning it has for
+      automatic runs, so the camera check's tape test and the grasp planner's
+      tape correction keep working, and depth on the flat tape is reliable.
+      Hover magnifier (HoverLoupe.tsx): over the frozen frame, the marker
+      preview, the manual frame and the live view's depth readout, a box beside
+      the pointer shows the full-resolution pixels (4x, wheel 2x-8x) with a
+      crosshair on exactly the pixel a click records (lib/ImagePointer.ts: one
+      mapping for clicks and magnifier, through borders, letterbox bars,
+      mirroring and any device pixel ratio). Arrow keys nudge it a pixel and
+      Enter clicks it.
+      Drift baseline: a fit is saved with the desk as depth saw it during the
+      fit, so /locate can tell when the camera moves later. The desk plane of
+      each pose is searched again near the fitted camera's own table
+      (CameraDrift.DeskPlanesNearFit; on 2026-10-01 every pose had locked onto
+      a bookshelf's side and four good fits were rejected), and stillness
+      during the fit is measured on the desk's own cells, first third of the
+      poses against the last (CameraDrift.MotionFromDeskMap). A baseline that
+      cannot be built, or motion during the fit, is a warning on the saved
+      calibration, never a rejection.
+
+
+================================================================================
+8. THE AI LOOP, STEP BY STEP
+================================================================================
+
+This is the heart of the app: submitAiPrompt() in App.tsx. Here is the full
+flow, in order.
+
+STEP 0 - PRECONDITIONS
+  A model must be selected. While the bridge reports a latched motion fault
+  (or a protection trip, which latches one) no task starts: the chat says "Not
+  started: the bridge reports a motion fault: <its text>. Fix the cause, press
+  Hold to clear the fault, then send the task again." Such prompts used to be
+  dropped without a word, after the whole capture.
+  The arm must be still before its pose is read: no route running, no joint
+  moving, fresh state (under 700 ms old), still for 300 ms (ArmNotStillReason
+  in AiTaskLoop.ts). The task waits up to 10 s (ArmStillWaitMs) for that, then
+  stops with "the arm was still moving 10 s after the task was sent". On
+  2026-09-28 22:46 a prompt read the pose while the arm was folding home from
+  self-calibration, and its relative move was refused 5.4 cm later at approval.
+  The servo state, elbow mode, joint limits, tip and the anchor for relative
+  moves are read after the capture, right before the prompt is built, so the
+  pose matches the image; they used to be read at submit, before the 3 s
+  countdown and the /locate call. If the tip moved more than 1 cm between the
+  frame and the prompt (ArmMovedDuringCaptureCm), or a route started, the
+  step ends: "the arm moved 3.0 cm while the camera image was measured". The
+  whole exchange is then computed against that one snapshot even if live state
+  updates arrive meanwhile.
+
+STEP 0b - ROUTING: WHAT THE MAIN MODEL GETS (src/lib/AiPromptRouter.ts)
+  Before any of the above, each prompt gets one of three routes:
+    text          the prompt only (BuildTextOnlyMessages): no capture, no
+                  /locate, no depth map, no arm-still wait, no task.
+    camera        the prompt and one colour frame (BuildCameraMessages):
+                  no arm-still wait, /locate, depth map, camera gate or task.
+    camera_depth  everything in this section: the arm-still wait, the frame,
+                  /locate's calibrated measurements and the camera gate, the
+                  depth map, the task state, proposals and approval.
+  text and camera are answer-only (AnswerRoute): their reply is shown as
+  plain text, never parsed for a motion or a notepad update, so a latched
+  fault does not stop them.
+  The safety floor (PromptRouteFloor) comes first and can only add inputs:
+  a task check-in, an answer to the model's question, a task or arm motion
+  under way when the prompt was sent, an object to act on (TaskNeedsPositions),
+  motion words, arm-state words (gripper, servo, joint, wrist), coordinates or
+  units, or a prompt over 8000 characters all get camera_depth without asking
+  Nimble. Scene words (camera, photo, desk, table, see, look, visible, right
+  now) get at least camera. Teaching questions ("explain how...", "what is...")
+  with no live-scene reference and no object to act on have no floor.
+  Otherwise Nimble decides: POST /ollama/v1/systemone (Ollama >= 0.35,
+  https://ollama.com/library/nimble) with
+    { model: "nimble", keep_alive: "2h", state: { user_prompt },
+      questions: { input_mode: { type: "choice", instructions,
+        criteria: { text, camera, camera_depth } } } }
+  and reads answers.input_mode { type: "choice", choice, probabilities: {
+  text, camera, camera_depth }, confidence }. The route is the fewest inputs
+  whose probabilities (counted from text up) reach 0.9, never below the
+  floor. Old Ollama, no nimble, routing disabled, nimble not fitting
+  router_vram_budget_gb beside the loaded models (/api/ps), warming up, a
+  reply after router_timeout_ms (800 ms, at most 1500, availability check
+  included), HTTP errors and malformed answers go to the rule classifier
+  (RuleRoute) instead of waiting: the floor still runs first and the rules
+  never go below it. text by rule: a greeting, or a clear general question,
+  explanation or piece of writing ("what is", "explain", "how does", "why",
+  "define", "calculate", "translate", "write", "summarise", ...) with no
+  scene, motion, arm, object, colour or position word and no "it / this /
+  these / here / there" ("what is inverse kinematics?", "write a haiku").
+  camera by rule: a floor-camera prompt with no position, distance or size
+  word ("what's on the desk?", "what do you see?"). Anything else ("what
+  colour is the cup?", "how does a servo work?", "tell me something") keeps
+  camera_depth (source fallback): never less than before routing existed.
+  Text and camera remain answer-only, so a wrong rule route can never move
+  the arm; it can only answer with fewer inputs.
+  Keeping Nimble warm (a cold load from disk took 35 s; warm it decides in
+  ~100-120 ms): the dev server warms it at start and whenever Ollama comes
+  (back) up (scripts/NimbleWarmup.ts, keep_alive router_startup_keep_alive
+  30m, same version/model/VRAM checks; SO101_ROUTER_WARMUP=0 turns it off).
+  The page warms it as soon as AI mode shows, and every minute while someone
+  used the page within 15 min (key, click, scroll, pointer move) a fresh
+  /api/ps check (AiPromptRouter.KeepWarm) warms it again when Ollama dropped
+  it or its load runs out within 5 min. router_keep_alive is 2h, so Nimble
+  (~9.5 GB beside qwen3.8:27b's ~17.5 GB on the 32 GB card) unloads at most
+  2h15 after the page was last used: close the tab or set router_keep_alive
+  shorter (e.g. "30m") to free the VRAM sooner for games. It is never pinned
+  (-1).
+  The AI panel shows "<route> (<Nimble | safety rule | rules | fallback>,
+  <ms>): <reason>", e.g. "Prompt only (rules, 0 ms): Nimble is warming up;
+  rules: a general question or writing, ...", and ai.jsonl gets a prompt_route event (route, source, reason,
+  floor, nimble_choice, probabilities, duration_ms, router_model, sends),
+  shown as PROMPT_ROUTE by ReviewRecording.py timeline. The camera route
+  records camera_frame and its reply with mode "camera".
+
+STEP 1 - BUILD THE MESSAGES
+  An OpenAI-style chat array is assembled (STEP 2 turns it into Ollama's
+  native messages):
+    [ system prompt , last up-to-6 prior messages , the new user message ]
+
+  THE SYSTEM PROMPT (buildAiSystemPrompt) tells the model:
+    - it controls an SO-101 arm through an approval UI
+    - REACH FACTS (ReachFactsText in AiMeasurements.ts): the right arm's pan
+      axis is at X -13.3, Y 0, Z 4.7, and at desk height a straight-down wrist
+      reaches only 27 cm from it, -75 deg 31.5 cm, -60 deg 35.5 cm, -45 deg
+      39 cm, -30 deg 41.5 cm, nothing beyond about 42.5 cm (DeskReachCm, from
+      the CAD arm; TestAiTaskSafety checks the figures). It used to be told the
+      arm's 48.7 cm length, and proposed -90 deg grasps 37 cm away.
+    - it cannot move the arm directly; a human must approve
+    - it will be given the tip position in X/Y/Z cm and wrist pitch in degrees
+    - it must use RELATIVE centimeters: +left, +farther, +up (negatives flip)
+    - wrist_pitch_degrees is an ABSOLUTE target angle
+    - REACH RULE: a target it cannot reach exactly is moved by the app to the
+      nearest reachable one (STEP 6), which the next check-in reports, so it
+      should aim at the point it wants and not pre-compensate; a target more
+      than 3 cm from anything reachable, below the floor or descending onto an
+      [UNRELIABLE] object is still refused and returned with the nearest
+      possible target
+    - it may include direct_servo_targets for slider-level moves
+    - for the gripper, fraction 1.0 = open, 0.0 = closed
+    - CHAINED MOTION: one motion_proposal may chain ONE gripper action with
+      ONE tip move, in an explicit order: "gripper_before" (the gripper moves
+      first, then the tip) or "gripper_after" (the tip first), beside its
+      target_cm or move_delta_cm, e.g.
+        {"target_cm":{...},"wrist_pitch_degrees":-49.7,"gripper_before":0.8}
+        {"move_delta_cm":{"left":0,"farther":0,"up":6},"gripper_before":0.0}
+      The human approves both at once; the app runs them in order, the
+      second once the first has finished, and re-prompts after both. Never
+      chained (the app refuses them): the descent to an object's grasp point,
+      a close after a tip move, a close followed by anything but a straight
+      lift, and opening or narrowing the gripper beside an object below its
+      top (not the object the jaws hold: putting it down and letting go is
+      checked like any move). A chained open goes to at most 0.8: one asked
+      as 1.0 runs to 0.8 and the card and the check-in say so ("open the
+      gripper to 80% (100% was asked for; a chained open goes to at most
+      80%)"). A chained motion counts as ONE of its
+      8 motions. The GRASP SEQUENCE is: open the gripper and go to the hover
+      point (one chained motion), descend (always its own motion), close and
+      lift (one chained motion); a release is the move above the basket or
+      cup with "gripper_after":0.8, then the lift. Each of these used to cost
+      a model round trip (10-25 s) and an approval of its own.
+    - NEXT STEP RULE ("the most important rule", right after the GRASP RULE):
+      when the TASK OBJECT line gives a NEXT STEP with a motion_proposal, the
+      reply's motion_proposal is that JSON copied exactly; never skip, reorder,
+      merge or improve it, never descend unless it says descend; to disagree,
+      reply ask. It says the app refuses any other move that ends low beside
+      the task object only "when the message ends with a NEXT STEP TO COPY
+      line (a grasp the app planned)": the only steps the guard holds the arm
+      to (2026-10-01 review: it used to claim that for every NEXT STEP, a
+      contact task's and a grasp's without a plan too, which nothing held).
+      A grasp with no GRASP PLAN gets no descent from its NEXT STEP either: over
+      the object it says reply ask, as the GRASP RULE does (the guard refuses
+      that descent anyway); a contact task's NEXT STEP still descends.
+      The APPROACH RULE and the GRASP SEQUENCE defer to it ("You do
+      not pick these steps": the step repeats or corrects one when the arm
+      stopped off its point). 2026-10-01 18:54: the approach rule said to
+      descend at the next check-in, and qwen descended from a hover point the
+      NEXT STEP was re-aiming. The check-in adds "when the TASK OBJECT line
+      gives a NEXT STEP, that step is the approach: copy it".
+    - it must reply with ONLY JSON in a specific shape (see below)
+    - it has a persistent NOTEPAD (its memory) appended to the prompt, and can
+      rewrite it via "notepad_update"
+
+  The required JSON reply shape:
+    {
+      "response_to_user": "short conversational reply",
+      "task_status": "continue",
+      "motion_proposal": {
+        "move_delta_cm": { "left": 3.0, "farther": -5.0, "up": 2.0 }
+      },
+      "notepad_update": "optional"
+    }
+  For "no movement", motion_proposal is null. The examples carry no wrist
+  pitch: the model copied the old example's -45 into grasps the arm could not
+  reach there. It is told to give wrist_pitch_degrees from the TASK OBJECT
+  line, or to leave it out to keep the current wrist. The fixed gray/beige
+  tape's saved coordinates are no longer in the prompt: they put it on the
+  floor beside the cart, not on the basket rim (the calibration panel still
+  shows them).
+
+  THE USER MESSAGE (buildAiUserPrompt) appends the live context to your text:
+    - current tip position in DISPLAY cm (+X left, +Y far, +Z up)
+    - current wrist pitch in degrees
+    - every servo's present raw value and 0..1 fraction
+    - if vision capture succeeds: a short depth summary
+    - with a NEXT STEP the guard holds the arm to (BuildGraspGuard's Step: a
+      grasp with a GRASP PLAN, the missed one's too, the object not in the
+      jaws) that gives one motion_proposal, that JSON again as the last line
+      ("NEXT STEP TO COPY (from the TASK OBJECT line; the app refuses any
+      other move near the can): "motion_proposal":{...}. Copy it exactly as
+      your motion_proposal, or reply task_status "ask" ..."), where the model
+      reads last (the step used to end a 2,700-character line). A contact
+      task, a grasp without a plan or a held object gets no such line.
+    - a reminder to return JSON only
+
+  VISION ATTACHMENTS:
+    Before the Ollama call, the app captures the current frame (with the depth
+    camera, also its frame number) and then:
+      - POSTs /locate {image, depth_seq, mirrored, model, task_object}. qwen
+        draws boxes on a 0-1000 grid and the bridge measures each object: with
+        a depth-camera calibration, in 3D from that frame's depth (centre X/Y,
+        base Z, top Z, height, footprint) in the AI's frame; otherwise the box
+        bottom is mapped onto the table plane. task_object is the task's
+        object as the app read it ({"phrase": "black thing on the desk",
+        "label": "black thing"}, only when the task names one): the bridge runs
+        one strict query for it, flags the measured object its box lands on
+        (task_match) and measures a box no sample named on its own
+        (task_query_only; one detection, so the app tags it [UNRELIABLE]).
+        The bridge asks qwen up to 3 times and takes each label's median box;
+        when the first two samples boxed the same spots (within 25 px,
+        whatever they called them) the third is skipped. Told a task object,
+        it zoom-refines only that object's boxes (and boxes its samples
+        disagreed on); every object carries refined, and the others keep the
+        first pass's coarse box, which can be several cm off. When the query
+        answered [] and no label names the object (it is not in view), only
+        boxes the samples disagreed on are refined; with no task object, or a
+        failed query and no label naming it, every box is refined as before.
+        With a depth calibration that stores where its tips were
+        (observed_tip_hull_cm), an object is extrapolated when its X/Y lies
+        more than 10 cm (SelfCalibration.TipRegionMarginCm) outside that hull,
+        and each depth object carries outside_calibration_cm (0 inside the
+        hull). Older fits keep the table-plane pixel test. The behind-camera
+        calibration poses now cover display X -14.9..+22.1 (WorkspaceFrame.json
+        CalibrationSampling; a facing camera keeps its own window), the desk
+        where objects sit, so a new calibration covers the desk objects.
+      - POSTs /depthcam/depth {seq, mirrored} for the measured depth image, or
+        /depth-server/depth for a webcam frame's UniDepth estimate.
+    The user message then contains (STEP 2 sends each part as its own native
+    Ollama message):
+      - the text prompt/context, including MEASURED OBJECT POSITIONS
+      - image_url #1: the original frame
+      - image_url #2: the colorized depth image (black = no reading)
+    If the camera or depth is unavailable, the request falls back to the color
+    image or text only and the UI logs the problem.
+
+  THE CAMERA GATE:
+    /locate first checks the camera pose against the calibration, before any
+    Qwen call. With the calibrated desk in view the desk decides (its height
+    map within 0.5 deg / 0.5 cm, at least 67% of its cells agreeing), with the
+    red tape on the gripper when it can judge. With no calibrated desk in view
+    (a shelf or cabinet; back end/RobotReference.py) the camera is assumed
+    fixed where it was calibrated and the gripper's red tip tape checks it:
+    within 0.75 cm of where the arm puts it the capture is "verified";
+    positively farther off the camera "moved" and the task stops; when the
+    tape cannot judge (arm moving, torque off, jaw not as at calibration, tape
+    hidden or out of view) the capture passes as "assumed", logged with a
+    one-line warning saying why (RobotCheckNote). Aaran's decision
+    (2026-10-06/07): an assumed capture lets the task run, but it is never
+    treated as checked: its measurements keep their [UNRELIABLE] tags
+    (scene_checked false on the bridge, sceneChecked false in
+    AiMeasurements.ts), it keeps a scene tripwire, and space the camera has
+    not observed beside the task object is never taken as free
+    (SceneGeometry.AssumeTaskReachFree stays off). With no desk in view the
+    desk-object tripwire cannot fire, so the tripwire is the basket rim
+    (RobotReference.RimCheck): an assumed capture whose rim positively reads
+    moved is blocked as camera_moved (object_locator TRIPWIRE_ASSUMED_RIM,
+    2026-10-08). It catches some moves, not all (14 of 24 re-rendered turns
+    of 1-6 deg; not the real 4.16 deg turn of 23:01, which it could not judge).
+    If /locate answers error_code camera_moved, the app stops any request
+    before the model is asked anything: the proposal and task are cleared, the
+    model's conversation is dropped (its positions came from that camera), and
+    a red banner in the AI panel says, for example, "Camera moved 5.2 deg /
+    1.3 cm since calibration at 15:04: lock the head and run Automatic
+    calibration". When the desk numbers are inside their limits (the gripper
+    tape check or the desk-object tripwire blocked), the banner shows the
+    bridge's own sentence instead. Home, jog and the other manual controls keep
+    working. The banner stays until a later capture passes the check.
+    A task that acts on an object ("grab", "put", "hand me", "press", or any
+    task naming an object, read through a one-letter verb typo such as "Grabe"
+    and through "move the gripper tip ... above the eraser"; "open the
+    gripper", "open your jaws" and "is the gripper open?" do not count) also
+    stops on camera_not_verified (the calibration
+    has no check reference; a webcam capture never has one, so the banner says
+    such tasks need the depth camera), camera_check_failed, a failed /locate,
+    no answer from the bridge, or no camera frame: it never falls back to
+    guessing positions from the image. A description, a relative jog or a
+    gripper command still goes to the model, told that nothing was measured.
+    What to do: lock the camera head (tilt, pan and the camera screw), run
+    Automatic calibration, send the task again.
+    On a pass, the MEASURED OBJECT POSITIONS header quotes that frame's check
+    ("camera check passed: 0.1 deg / 0.1 cm from the calibration fitted at
+    21:10"); detections the bridge withheld are listed as "not measurable"; and
+    a target_cm whose X and Y come within 3 cm of ANY [UNRELIABLE] object of
+    that frame (and of the task object's last measurement) is refused only
+    when it descends below the object's top Z + 3 cm: a hover above it is
+    accepted (the next image checks the alignment), and the descent must be a
+    move_delta_cm step. It used to guard only the matched task object, so a
+    task noun that matched nothing ("thingon" at 16:10 on 2026-09-29) turned
+    it off. Approve applies it again with the same objects.
+    The tags (AiMeasurements.ts Reasons): "11.2 cm outside the
+    camera-calibrated area" (the distance when the bridge reports
+    outside_calibration_cm), "vision detections disagreed between samples",
+    "found only by the task query, in one detection", and "coarse box, not
+    refined" (refined false). The last never applies to the task object bound
+    in that frame, whose boxes the bridge refines; of two labels at one spot,
+    the refined one is bound (UnreliableMeasurements builds the set).
+    When the task object is graspable (or no reach verdict exists), the TASK
+    OBJECT line ends with READY-MADE MOVES from the current tip: the exact
+    hover motion_proposal (target_cm, and the same as move_delta_cm) and the
+    descent to mid-height, as plain JSON numbers to copy, each with the wrist
+    pitch the app verified there. Without them qwen3.6 (the model then) did
+    its own subtraction and flipped signs (farther -11.5 for +11.5) while the
+    measured box sat right on the eraser; without the pitch it used -45 where
+    only -40..-5 reached. The hover height is rounded UP to 0.1 cm, so it
+    always meets the hover rule it is checked against. A BLOCKED or OUT OF
+    REACH line carries no hover hint and no moves: those mean reply ask.
+    There is no "ground truth" or "+/-1 cm" claim any more.
+
+STEP 2 - CALL OLLAMA (requestAiCompletion)
+  POST /ollama/api/chat (Ollama's native API; body built by
+  BuildOllamaChatBody in src/lib/OllamaChat.ts) with:
+    { model, messages, stream: false, think: false, keep_alive: "30m",
+      options: { num_ctx: 32768, num_batch: 1024, temperature: 0.2,
+                 num_predict: 1024 } }
+  num_ctx, num_batch and keep_alive come from back end/OllamaOptions.json,
+  which the bridge's grounding (object_locator.py) reads too. Every caller
+  must send the same num_ctx and num_batch, or Ollama reloads the model
+  (8-15 s) each time the other one calls. The OpenAI-compatible endpoint the
+  app used before (/v1/chat/completions) ignored num_ctx, so the model loaded
+  at the Ollama desktop app's 262144-token default and left under 1 GiB of
+  VRAM free; anything else using the GPU then slowed prompt reading 20-100x
+  (the 22-46 s model calls of 2026-09-28). At 32768 about 5-10 GB stays free,
+  and a recorded control call takes about 1.7 s.
+  think: false turns off the model's hidden reasoning (without it qwen3
+  reasoned for 258 tokens first); /v1's reasoning_effort "none" did this.
+  num_predict is the answer budget: at most 1024 tokens (AiMaxOutputTokens;
+  the largest of 42 recorded replies was 288). It used to follow the loaded
+  context (253952 at 262k), so a runaway reply could run 20+ minutes. If
+  thinking is ever turned on again, the budget must grow.
+  MESSAGES: each content part becomes its own message of the same role, in
+  order (ToOllamaMessages): the prompt text as { role, content }, then each
+  image as { role, content: "", images: [base64 without the data: prefix] }.
+  That is how /v1 split them, and it reproduces its token counts exactly
+  (1103, 5354 and 5519 on recorded calls). One merged message puts the images
+  before the text and made the model reply with malformed JSON.
+  REPLY: the text is message.content; the statistics read prompt_eval_count
+  and eval_count. A reply cut off by the budget (done_reason "length") is an
+  error, not a reply: its JSON is incomplete, so nothing read from it may
+  become a motion, and the task ends with the reason. An empty reply is an
+  error too.
+  NOT CHANGED (owner's call): every call still carries the depth colormap
+  image (927 prompt tokens, about 0.3 s a call). The capture countdown is off
+  by default (OllamaOptions.json capture_countdown_seconds 0): a task captures
+  as soon as the arm is verified still.
+
+  TIME LIMITS: each model call has 120 s (AiModelTimeoutMs) and each /locate
+  call 60 s (LocateTimeoutMs), through WithTimeout in AiTaskLoop.ts. At the
+  limit the call is aborted and the task ends with "the model (<name>) did
+  not answer within 120 s" or "the object measurement (bridge /locate) did not
+  answer within 60 s". A hung call used to leave the task "waiting for AI"
+  with the input disabled for good. The recordings of 2026-09-28/29 show model
+  calls up to 46 s and whole /locate calls up to about 47 s. Any other failed
+  request also ends the task ("the AI request failed: <error>") instead of
+  leaving it with nothing to approve.
+
+STEP 3 - EXTRACT THE NOTEPAD UPDATE
+  If the JSON contains "notepad_update", it replaces the saved notepad and is
+  POSTed to the bridge (/notepad), persisting to back end/qwen_notepad.md.
+
+STEP 4 - PARSE THE RESPONSE (parseAiResponse)
+  - extractJsonObject() pulls the first balanced {...} out of the text, even if
+    it is wrapped in a ```json fence or surrounded by prose.
+  - response_to_user (or message) becomes the chat reply.
+  - The motion proposal is parsed from many possible key spellings
+    (parseAiMotionProposalFromObject): move_delta_cm / delta / relative / target_cm
+    / absolute coordinates / wrist_pitch_degrees / wrist_pitch_delta /
+    direct_servo_targets|slider_targets|servo_targets, with left/right,
+    farther/closer, up/down, x/y/z, dx/dy/dz aliases, in cm or inches.
+  - direct_servo_targets accept target_raw, target_fraction, or natural-language
+    actions ("open"/"close" -> gripper fraction).
+  - gripper_before / gripper_after (lib/AiChain.ts ReadChainGripper): a 0..1
+    gripper fraction (or {"target_fraction": ...}) chained with the tip move
+    (proposal.chain: order, raw target, fraction). One that would not change
+    the gripper (within about 2 deg of its commanded target) is dropped and
+    the move is a single motion; one without a tip move is a plain gripper
+    step (a 1.0 open stays 1.0 there). Chained, an open asked past 0.8 runs
+    to 0.8 (AiChain ChainedFraction; proposal.chain.Asked keeps what was
+    asked, for the card and the check-in), and is dropped when the gripper
+    is already that open. Both at once, or a value that is no fraction, is
+    refused with the reason.
+
+  PLAIN-TEXT FALLBACK (addFallbackMotionFromText): if no JSON motion was found,
+  the app scans the model's prose - and then your original prompt - for phrases
+  like "move left 5 cm", "wrist to -45", "open the gripper", and builds a
+  proposal from those.
+
+STEP 5 - CONVERT TO A TARGET + CLAMP
+  Relative deltas are applied to the snapshot target in MODEL space
+  (left subtracts from model X; farther adds to Y; up adds to Z). The result is
+  run through constrainTargetPose (clamp to max reach + nearest reachable wrist
+  pitch). If the request had to be clamped, the difference is recorded as
+  "constraintIssues" so they can be reported.
+
+STEP 6 - SNAP THE TARGET TO THE NEAREST REACHABLE ONE (src/lib/AiTargetSnap.ts)
+  The owner's rule: the AI uses targets the way a person uses the manual GUI.
+  It asks for a point; if the arm cannot reach it, the app moves it to the
+  nearest point it can, shows the human both, and tells the AI where the arm
+  actually went. SnapAiTarget (pure; the same input gives the same output at
+  proposal time and at Approve) runs in this order:
+    1. Refusals, never snapped: non-finite numbers, the tip below the floor
+       (the model misread a height: snapping it up would hide that), a
+       descent onto ANY [UNRELIABLE] object of the frame, a point inside basket
+       material.
+    2. Exact: the IK converges on the request strictly (0.02 cm, 0.08 deg) on
+       joint limits pulled in by 0.5 deg, and the gripper's lowest point stays
+       above the floor. No note.
+    3. The wrist only: the nearest pitch within 45 deg of the request that
+       converges strictly and keeps the jaw above the floor, stepped 0.25 deg
+       into the reachable range and rounded to 0.1 deg (FindReachableWristTarget
+       with MarginDeg/MaxChangeDeg/Accept, shared with the manual GUI). 16:10
+       on 2026-09-29: -90 at X 4.2, Y 32.5, Z 1.0 becomes -55.2, which passes
+       Approve after 200 random 2-tick jitters (the old -55.9 failed after 1).
+    4. The tip: the nearest target within 3 cm (FindNearestLocalTarget in
+       TargetWorkspace.ts, the bounded variant of the GUI's joint-space
+       search: IK seeds across the 45 deg window, a pattern search, a budget of
+       60000 pose evaluations, 1-6 s) that is never more than 0.5 cm lower than
+       asked, never below the floor, on the same side of the basket rim (the
+       top tray's footprint, and its rim height), within the wrist window,
+       with the jaw above the floor and clear of [UNRELIABLE] objects; a
+       descent (1 cm or more below
+       the tip) moves at most 1 cm sideways. Between points about as near the
+       smaller wrist change wins (1 deg counts as 0.01 cm). The result must
+       converge strictly as in 2.
+    5. Otherwise refused: "too-far" with the nearest target it found (the same
+       point at any wrist pitch first, else a wider search) and why it was not
+       used (more than 3 cm, the wrist would change by more than 45 deg, too far
+       sideways on a descent), or "no-solution".
+  Every result passes the checks the page repeats (IK with the send's joint
+  limits, floor, jaw, [UNRELIABLE], rim side) or is refused "post-check".
+  Why the request was not reachable is classified from one explained solve:
+  "at wrist -90 deg the arm is 2.73 cm too short to reach that point", a
+  named joint and its range, a basket contact, the jaw below the floor, or
+  the edge of reach; after a failed wrist-only stage it adds "no wrist angle
+  within 45 deg of yours reaches it" and the collision that blocks the others.
+  The caps are SnapRules (MaxCm 3, MaxPitchChangeDeg 45, MaxDropCm 0.5,
+  DescentMaxXYCm 1, LimitInsetDeg 0.5, PitchCostCmPerDeg 0.01, and
+  CollisionMarginCm 0.2: a moved tip keeps that much more clearance from the
+  basket and body, since the bridge checks the pose rounded to encoder steps,
+  which refused 13 of 33 boundary snaps without it); AiSnapEnabled = false
+  turns the snap off (every target the arm cannot reach exactly is then
+  refused).
+  Where it runs: the refusals and the exact check run on the page (one or two
+  IK solves). A target that must move is searched in TargetWorkspaceWorker
+  (Kind "AiSnap"), awaited, with a 15 s guard; a worker that fails or times
+  out leaves the target refused ("timeout"). The old wrist search ran up to
+  442 solves (1-1.6 s) on the page thread.
+  The proposal keeps the snap result, the servo snapshot it was made from
+  (the IK seed), a key of the joint limits, CAD alignment and elbow branch,
+  and the frame's [UNRELIABLE] objects; the record's motion adds
+  requested_target_cm, requested_wrist_pitch_degrees and snap, and a "snap"
+  event is recorded for every target that was moved or refused.
+  One set of joint limits (bridgeIkLimits, the ones sendTargetPose sends with)
+  is used for the snap, the validation, the feedback hints, the task-object
+  verdict and Approve's re-check.
+
+STEP 7 - VALIDATE (validateAiMotionProposal)
+  Runs the LOCAL IK solver on the proposed target and collects issues:
+    - out of reach at that wrist pitch: "At wrist -90 deg the arm is 2.6 cm too
+      short to reach that point" (or too close to the shoulder)
+    - a joint limit blocks it: "elbow flex would need 79.9 deg, its range is
+      94.9..104.9 deg"
+    - the snap's refusal (STEP 6), even when the request itself passes the
+      normal tolerance: the snap found it only at the tolerance edge, or no
+      target within its caps. A pitch is never quoted unless a search verified
+      it: the old "closest is X deg" was the pitch of a failed solve.
+    - the tip below the table floor, and (new) the lowest point of the gripper
+      below it (see NOTE ON THE CAMERA / IMAGES)
+    - a target_cm descent onto an [UNRELIABLE] object (STEP 1), listed once
+      even when the snap refused it for the same reason
+    - a direct servo target is outside its slider range
+    - more than one thing changes: a tip move with a slider change, or two
+      sliders (the bridge runs one move at a time and refuses a second while
+      the first runs); a slider restated where it already is does not count.
+      A gripper action chained through gripper_before / gripper_after is not
+      such a change: the app sends it as its own move (STEP 10)
+    - a CHAINED MOTION: each leg is checked with the gripper as it will be
+      then. After a gripper_before the tip move's IK, floor, jaw floor,
+      closed-jaw descent rule, guard and snap (STEP 6) all use the jaws at the
+      chained fraction (the hover after "open to 80%" with the jaws open; the
+      lift after a close with them closed). The gripper action's swing
+      (GripperSweepReason) is checked where the arm is when it runs: now for
+      gripper_before, at the tip move's end pose for gripper_after. And
+      ChainRefusalReason (lib/AiChain.ts) refuses what may not follow without
+      a model call, judged on the target sent and the one asked for:
+        - a gripper fraction above 0.8 (a wider open can stop short of its
+          target, and the tip move would wait for it until it timed out; the
+          parser already runs such an open to 0.8);
+        - a close (to 0.3 or less) after a tip move: the jaws would close
+          wherever the move ends, unseen;
+        - a close before anything but a straight lift (at least 1 cm up, at
+          most 0.5 cm sideways, the wrist as it is): sideways or down it
+          would drag the closing jaws or what they hold into what is around;
+        - the descent onto the task object: a tip move that does not rise
+          and ends within 3 cm of its footprint below its top + 1 cm. It is
+          always its own motion, so the next image checks the open jaws beside
+          the object before the close (the GRASP PLAN and the guard rely on
+          that look);
+        - opening or narrowing the gripper beside the task object below its
+          top + 1 cm (within 3 cm), where the moving jaw swings toward it: a
+          chained gripper action runs above it or away from it.
+      The last two are about the task object the jaws are to close on. Once
+      they hold it (the guard's Held: a close in this task stopped at 8% open
+      or more), they do not apply, as the GRASP PLAN's own rules do not:
+      putting it back down with "gripper_after":0.8, or letting go and
+      rising, is checked like any move (2026-10-01 review: "put it back" was
+      refused as "the descent onto it", with advice to open it in the air).
+      Allowed, for example: open (or narrow to an M3 plan's fraction) and go
+      to the HOVER POINT; close and lift straight up; move above the basket
+      and open (a release); rise from beside the object and open above it.
+    - THE NEXT STEP RULE (GraspPlan.ts NextStepReason, part of the guard, so
+      the snap refuses such a target too and never moves it): with a GRASP
+      PLAN, the guard carries the TASK OBJECT line's NEXT STEP (AiMeasurements
+      PlannedStepOf: the sentence, its one motion_proposal JSON verbatim, and
+      where that move ends, read like a reply from the same tip). A tip move
+      that ends within 3 cm of the task object (where the camera measured it
+      or where the real fixed finger meets it) below its top + 1 cm must be
+      that step (its target within 0.3 cm, the wrist within 5 deg) or a rise
+      of 0.5 cm or more that comes no nearer the object. Otherwise: "That move
+      is not the NEXT STEP, and it ends low beside the can (within 3 cm of it,
+      below its top + 1 cm), where the app accepts only the NEXT STEP or a move
+      up and away from the can. [the guard's contact, if any] Copy the NEXT
+      STEP's motion_proposal exactly: "motion_proposal":{...}. The step, with
+      why: NEXT STEP of the grasp (...) ... If you think the NEXT STEP is
+      wrong, reply task_status "ask" with motion_proposal null and say why."
+      Moves that end anywhere else, Home, a held object's put-down and
+      release, contact tasks and tasks without a plan are not held to it (the
+      guard then carries no Step at all); the guard's other rules still are.
+      Its other refusals now give the NEXT
+      STEP's JSON instead of the plan's points. 2026-10-01 18:54:53: the arm
+      held the hover point 0.5 cm toward the can and the step re-aimed it;
+      the model descended from there, only "deeper than the plan" refused it
+      (quoting the plan's hover point, the one the arm had stopped off), and
+      its revision down to the grasp height, 0.5 cm toward the can, passed
+      and was approved (TestGraspReplay replays it).
+  possible = (no issues).
+
+STEP 8 - THE REVISION LOOP (up to MAX_AI_REVISION_ATTEMPTS = 4)
+  If the proposal is NOT possible, the app does NOT give up. It builds a
+  feasibility-feedback message (BuildAiFeasibilityFeedbackPrompt, in
+  src/lib/AiTaskLoop.ts) that tells the model exactly what failed, where the arm
+  is now, what its rejected target was, the snap's nearest possible target
+  and why the app did not use it ("Nearest possible target: X .., wrist ..
+  (4.25 cm from yours). The app did not use it because it is more than 3 cm
+  away ..."), or, only when the snap found none, the nearest reachable point on
+  the line from the tip toward it (local IK bisection; at 16:05 it said 8.02 cm
+  short where a target 0.67 cm away existed), and for a basket collision the
+  lowest height at that X/Y where some wrist pitch reaches the point without
+  touching the basket (only
+  when the basket is what blocks it; the "adjusted to" line appears only when
+  the app really changed the target), then asks again. These hints run on the
+  page thread, so they are kept to a few dozen IK solves (about 0.15 s). Each revision is re-parsed and re-validated. This repeats until the proposal is possible or 4
+  attempts are exhausted. A snapped target is not a failure: the loop runs only
+  when the snap refused or the validation failed.
+
+  If still impossible after 4 tries: the motion is dropped, and the user-facing
+  reply explains that revisions were exhausted and why.
+
+  THE APP'S PLANNED STEP: when a proposal of the check-in was refused by the
+  NEXT STEP rule (STEP 7) and the 4 revisions are used up, the app offers the
+  NEXT STEP itself instead of dropping the motion and ending the task: the
+  line's JSON parsed, snapped and validated exactly like a reply (never a
+  no-op; a step without a JSON, "reply ask", or one that fails its checks is
+  not offered). The approval card is headed "App's planned step" and says
+  "This is the app's planned NEXT STEP from the GRASP PLAN, not the AI's: the
+  AI did not follow it. Check it before approving."; the chat says "The AI did
+  not follow the app's NEXT STEP in 4 revisions, so the app offers its own
+  planned step instead: <what it does>. Approve it to go on, or Block to stop
+  the task." The user still approves it, and it runs and counts like any
+  motion. The next check-in says "That motion was the app's own NEXT STEP from
+  the GRASP PLAN, approved by the user because your proposals did not follow
+  it: copy each NEXT STEP exactly from now on, or reply ask." and the motions
+  list "- Motion N (the app's planned NEXT STEP): ...". The record gets
+  planned_step {offered, why, step, motion, refused} and the approve record's
+  motion carries planned: true.
+
+STEP 9 - SHOW THE RESULT
+  - The conversational reply is shown in the AI panel.
+  - If there is a possible motion, the approval box fills in:
+      target X/Y/Z (display cm), the delta from the current target, the wrist
+      pitch target + change, any direct servo targets, and any IK notes
+      ("changed after revision", etc.). A snapped target adds, in the tiles'
+      frame (X negated from the AI's): "Asked for X -4.2 Y 32.5 Z 1.0, wrist
+      -90.0 -> will move to X -4.2 Y 32.5 Z 1.0, wrist -55.2 (same point; wrist
+      34.8 deg flatter). Why: at wrist -90 deg the arm is 2.73 cm too short to
+      reach that point." (a moved tip says "0.56 cm away").
+    A chained motion adds "Chained motion: one approval runs both, in this
+    order" and its two steps, numbered in the order they run: "1. Open the
+    gripper to 80% (raw 1922)  2. Move the tip to X .. Y .. Z .. cm, wrist ..
+    deg" (or the move first for gripper_after).
+  - The 3D view draws the proposed pose as a preview (a chain as it ends: the
+    tip at its target, the gripper at its chained fraction).
+  - The turn is kept for the next check-in as one compact prompt/final-reply
+    pair, with its target_cm, target_estimate_cm and X/Y/Z numbers replaced by
+    "[stale]". Check-ins send the last three whole turns, never half a turn.
+
+STEP 10 - HUMAN APPROVAL
+  Nothing has moved yet. The operator clicks:
+    APPROVE (approveAiMotion):
+        - if there is an XYZ/wrist motion -> updateTarget + sendTargetPose (which
+          sends set_target + send_ik to the bridge)
+        - apply the direct servo target that changes via updateServo
+          (move_servo); one restated where it already is is not sent. It is
+          sent at once, not through the 90 ms slider throttle, so it falls in
+          the approval's command range and a refusal of it reaches the task
+          (a deferred send used to fall outside it, and the check-in then
+          claimed the move had run)
+        - a CHAINED MOTION (approveChain): the same checks first (Approve's
+          validation runs both legs as in STEP 7, the no-op rule counts the
+          gripper action as a change). Then only its first leg is sent: the
+          gripper as move_servo (Immediate, gripper only, so a close that an
+          object stops becomes the bridge's grasp hold), or the tip as
+          send_ik. The second leg waits in the settle wait
+          (STEP 11) until the first has started and settled: a close stopped
+          by an object settles too, since the grasp hold makes where the jaws
+          stopped their target. The second leg follows only a first leg
+          that nothing else cut across: Coast, Hold or Home pressed while it
+          runs, a state frame with the torque off, or a bridge motion epoch
+          newer than the one seen when the first leg started (each route
+          start and each stop, Coast, Hold or Home moves it; arriving and a
+          grasp hold do not: AiTaskLoop ChainLegInterrupted) end the task
+          (source chain_interrupted), so the second leg is never sent from
+          wherever that left the arm (2026-10-01 review: Coast, then Hold,
+          during the first leg sent the second 110 ms after the Hold). Then
+          (continueChain) the first leg must have arrived: the gripper within
+          25 raw of its target, or, closing, held by the bridge's grasp hold
+          (the state's grasp_hold), with every arm joint within 25 raw of
+          where it was at approval; the tip within 1.5 cm of its target
+          (ChainRules.ArrivedCm: every settled motion recorded 2026-09-29..
+          10-01 stopped within 1.3 cm of its own). And the second leg is
+          checked again from the live joints: the tip move with the gripper
+          where it really stopped, and after a close with the guard holding
+          the object once the jaws stopped on it (as the check-in's guard has
+          it); a gripper leg's swing where the tip stopped, and the rule
+          about the jaws low beside the task object at the live tip
+          (ChainGripperHereReason). A failure there is not sent and the
+          check-in says why ("the second (...) was not sent: the gripper
+          stopped at 61% open, not at the 80% it was sent to"). A leg that
+          would not move anything (the gripper already at its target, the
+          tip already at its target by the no-op rule) is skipped, never
+          sent; a skipped first leg's second gets the same live check before
+          it is sent (failing it, nothing is sent and the model is told
+          why). A first leg the bridge refuses, that cannot be sent, that
+          never starts or does not settle never runs the second. A settle
+          check left from before a stop (React runs it after the stop
+          cleared the wait) sends nothing. The record gets approve (with the chain's
+          order and both legs) and one chain_leg {leg, of, kind, result} per
+          leg; chain_aborted when the second leg is dropped (once). A chain
+          that is the task's last allowed motion still runs both legs; the
+          task ends (step_limit) once the second is sent, or (bridge_refused)
+          when the bridge refuses its first leg: "Stopped: the bridge refused
+          the first part of the last motion allowed for this task, a chained
+          motion: <why>. Nothing moved, and its second part was not sent."
+          (it used to rewind the task to the motion before it, tell the model
+          that one was refused, and allow one motion past the limit). (A motion proposed with
+          task_status done or ask is dropped by the parser, so a chain always
+          runs inside its task; should one ever run without a task, the strip
+          reads "Approved motion · chained motion, part 1 of 2" with Stop
+          task, and the chat says how it went.)
+    BLOCK / CLEAR (blockAiMotion):
+        - discards the proposal; nothing is sent.
+  The approval box shows the move as a difference from the arm's live tip.
+  Approve refuses, without sending, a relative move planned from a tip that
+  has since moved more than 1 cm, and a move that would not move the arm (the
+  no-op rule below). It then checks the proposal again with the joint limits
+  the send uses, from the servo reading the target was chosen with (a tick of
+  jitter since once flipped a pitch at the tolerance edge). If that fails and
+  the joint limits, CAD alignment or elbow branch changed since the proposal,
+  the request is snapped again with them: within 0.3 cm and 1 deg of the shown
+  target it is sent, otherwise the new target is shown with "The arm's limits
+  changed since this was proposed" for another approval. If it still fails,
+  nothing is sent; in a task the model gets a check-in "Your last proposal was
+  not sent: <why>. The arm did not move." (counted like a no-op, so a second
+  one stops the task) instead of the task waiting for an approval that can
+  never come (08:07 and 16:10 on 2026-09-29 hung until Clear).
+
+STEP 11 - THE TASK LOOP (check-ins)
+  After an approved motion of a task that asked to continue, the app waits and
+  then re-prompts the model with a fresh capture (an AUTO CHECK-IN):
+    - The wait starts from the bridge's motion epoch at send time. It ends
+      only when the epoch has advanced (the bridge started the motion), state
+      is fresh (under 700 ms old), no route is running, nothing is moving,
+      every servo is on its target, and 0.3 s have passed since the start
+      (1.5 s until 2026-10-04: a short move waited ~0.7 s after it stopped).
+      While the bridge plans a route (several seconds) it sends this client no
+      state at all, so the old wait fired on frozen pre-motion state.
+    - A motion the bridge has not started within 25 s, one that does not
+      settle within its timeout (counted from its start: the larger of 12 s
+      and the bridge's motion_timeout_ms, which covers the whole route) stops
+      the task with the reason. An ok=false reply to the approved command
+      means nothing moved: the first one in a task is recorded (bridge_refused)
+      and goes back to the model at a check-in ("Your last approved motion
+      (motion N) was NOT executed: the bridge refused it: <text>. The arm did
+      not move.", with the snapped target that was sent), without using up the
+      step or listing the motion as done; the second one stops the task.
+      An IK refusal says how close the bridge came (section 9): "IK target is
+      unreachable at this wrist angle: the closest pose misses by 0.043 cm and
+      0.32 deg (limits 0.1 cm and 0.25 deg); wrist -43.1 deg reaches this
+      point".
+      The bridge answers each command once, in order, so the app counts
+      replies: a refused Home pressed during the wait does not stop the task.
+    - Gripper-only steps count as motions and get a check-in too.
+    - A CHAINED MOTION is ONE motion of the task (one approval, one step of
+      MAX_AI_TASK_STEPS, one check-in): the wait above runs for its first
+      leg, then (continueChain) its second is sent and waited for the same
+      way, and only then is the model asked again. The strip shows "chained
+      motion, part 1 of 2" / "part 2 of 2". The check-in's fact adds how the
+      chain ran: "It was a chained motion: first open the gripper to 80%,
+      then move the tip to X .., Y .., Z .. cm, wrist .. deg; both parts ran,
+      in that order." (or "only the first part ran (...): the second (...)
+      was not sent: <why>", "the first part had nothing to do (the gripper
+      was already there), and the second ran"). The motions list says
+      "- Motion 2 (chained): gripper to raw 1922, then tip to X .." in order.
+      A bridge refusal of the first leg is handled as above (nothing moved,
+      the step is not used up, the second leg is never sent); a refusal of
+      the second leg leaves the first leg's motion counted, and the check-in
+      says the second was refused (a second refusal in the task stops it).
+      The last allowed motion of a task may be a chain: the task ends once
+      its second leg is sent, or when the bridge refuses its first.
+      Coast, Hold, Home, a torque-off frame or a new motion epoch while the
+      first leg runs end the task: "Stopped: Coast was pressed while the
+      first part of a chained motion ran. Check where the arm is, then send
+      the task again. The second part of the chained motion was not sent."
+      Not started or not settled, the stop names the part: "the bridge did
+      not start the first part of the chained motion within 25 s".
+    - The check-in states what the last motion measurably did (how far the tip
+      moved, from where to where, how far it ended from its target) instead of
+      assuming arrival. After a snapped target it adds "You asked for X 4.2,
+      Y 32.5, Z 1.0, wrist -90.0; that is not reachable (<why>), so the app
+      sent the nearest possible target X .., wrist .. (D cm from your target)."
+      and "do not ask for the same unreachable point again; change the approach
+      (a higher hover, another side) or reply ask". The motions list notes the
+      snap after each one ("(you asked for ..: snapped 0.6 cm, <why>)"). On the
+      last allowed step it tells the model to reply ask if it cannot finish.
+  TASK OBJECT: the object a task names ("eraser" in "Grab the eraser") is
+  tracked. Each request says whether it was detected in this frame, where and
+  when it was last measured, and, on a verified camera, whether the right arm
+  can grasp it (local IK and the basket model, never the bridge's stateful
+  /ik/preview). The verdict (TaskObjectReachability, ReachScan) tries wrist
+  pitches from -90 to 0 in 2.5 deg steps at the X/Y and heights the model is
+  given, selects strictly and insets like STEP 6, and says how far the object
+  is from the pan axis: "graspable at Z -1.3 with wrist -60.1 deg; hover
+  waypoint Z 4.7 with wrist -55.4 deg (36.0 cm from the right arm's pan
+  axis)". The old 15 deg samples missed reach windows up to 12 deg wide. A
+  BLOCKED verdict gives the steepest pitch the arm reaches there and how each
+  pitch failed ("out of reach at wrist -90..-47.5 deg; gripper link could
+  contact the basket at wrist -45..-32.5 deg; ..."); it used to blame the first
+  collision "at every wrist pitch". While it is not detected, the verdict from when it was last
+  measured is repeated. Measured out of reach, the task stops before the model
+  call with "move it closer"; lost more than 8 cm from the gripper, it stops
+  too, unless an approved step closed the gripper since (the object may be in
+  the jaws). Hidden under the gripper is normal while grasping and does not
+  stop it.
+  WHICH OBJECT IT IS (lib/TaskObject.ts): ParseTaskObject reads the phrase
+  after the verb, skipping "please", "now", "gingerly", "that is ..." and
+  similar. A one-letter verb typo is read as the verb ("Grabe", "pickk up")
+  only when the task has no exact verb, the word is not an ordinary one where
+  it stands ("the plate", "told") and the task is not a question or a
+  description. Glued words split only when the left part is a known word
+  ("thingon" -> "thing on", "theeraser"; "carton" and "button" stay whole).
+  For "move/go/hover/lower ... the gripper (tip) ... above the red eraser" the
+  object is the one after the preposition. thing, object, item, one, stuff
+  and piece are generic: "the black one" is "black thing". "on the desk" / "in
+  the bin" say where it is, except after put/drop/throw/place/insert/stack/
+  move, where they are the destination. On 2026-09-29 16:05 the label was the
+  typo "thingon" and 16:02's "thing" matched nothing, while the model's own
+  target_estimate_cm was 0.03 cm from the USB drive.
+  Each check-in ResolveTaskObject picks the measurement by the first rule
+  that applies: named and task_match; task_match when the phrase has a colour
+  or size word and the label names no other kind of thing ("black box" is not
+  the blue "box"; "red eraser" never becomes the "mouse" the query landed
+  on); the label names it (the word, a synonym such as rubber/eraser or
+  cup/mug/bowl/bucket, or a one-letter typo of 5+ letters that keeps the
+  phrase's other nouns: a "glue stick" is not the "usb drive"), never with a
+  clashing colour, even through a same-spot twin ("box" beside "blue box");
+  task_match; within 3 cm (TrackCm) of where it was last measured, with a
+  similar footprint and a base within 3 cm, so a renamed object ("USB drive",
+  then "small black object"; 7 of 17 small objects were renamed between
+  check-ins) is not reported lost (not after the gripper closed: it may be in
+  the jaws); for a generic phrase, the one label that says its colour, not in
+  the bin unless the task says so. Two spots with nothing to tell them apart,
+  the robot's own parts and the bin for a desk task are never bound. The
+  label stays the user's words, and the line says how the measurement was
+  picked: TASK OBJECT "black thing": detected this check-in (measured as "USB
+  drive", picked by the task query) at X 4.1, ... ("tracked at the same spot",
+  "the only label with its colour"); MEASURED OBJECT POSITIONS tags it
+  "<- the task object". Unbound, a generic phrase (or a noun measured at two
+  spots) lists up to 6 candidates nearest the right arm: "no measured label
+  names it. Candidates measured this check-in: usb drive (X 4.1, Y 32.3), cup
+  (X -9.2, Y 22.2), ... If one of them is it, set target_estimate_cm to its
+  measured centre and the app will track it and check its reach; otherwise
+  reply ask." A concrete noun with nothing measured keeps "NOT detected in any
+  check-in ... reply ask".
+  While it was never bound, BindFromEstimate binds the one measured spot
+  within 3 cm of the reply's target_estimate_cm, unless its label names
+  another kind of thing ("Grab the eraser" never binds the binder the model
+  pointed at), a clashing colour, or the other surface. It runs right after
+  the reply is read, before the snap and every check, and the [UNRELIABLE]
+  set is rebuilt, so the reply and Approve check the same objects. Each bind
+  is recorded as task_object_bound {label, measured_label, source,
+  distance_cm}; each vision record carries the task_object sent.
+  NO-OP RULE: a proposal within 0.5 cm and 2 deg of the target the bridge is
+  holding (while the tip is near it), or within 1 cm and 2 deg of the live tip,
+  with no slider changing (a gripper step: within about 2 deg of its current
+  target; a chain's gripper action that moves the gripper counts as a change,
+  and a chain whose tip leg is already there sends only the gripper) would not move the arm. It is not offered, not sent and not counted; the model gets one
+  corrective turn. For a snapped target it says the request is out of reach
+  and its nearest reachable point is where the arm already is. The task stops, with the reason in the chat and a task_stop
+  event in the session record, on a second no-op, on the same target (to
+  0.5 cm, with the wrist within 2 deg: RepeatsLastTarget) proposed twice in a
+  row, on a requested target the app rejected at an earlier check-in, and
+  after the last of the 8 motions is approved. Turning the wrist at the same
+  point is a new motion; it used to stop the task as "the same target". So is
+  a chain to the last target whose gripper action moves the gripper (open
+  and go to the hover point the arm already holds): its tip leg is skipped
+  at the send.
+  NEXT STEP (AiMeasurements.ts NextPlannedGraspStep, and NextGraspStep
+  without a plan) offers the chain where it is allowed, as ONE
+  motion_proposal to copy: with the jaws less open than the plan's fraction
+  and the tip away from (or high above) the object, "open the gripper to 80%
+  and go to the HOVER POINT, straight above the grasp point beside the can
+  (not above its centre), as ONE chained motion (the gripper first, then the
+  tip): "motion_proposal":{"target_cm":{...},"wrist_pitch_degrees":..,
+  "gripper_before":0.8}. Copy it exactly: it is ONE motion_proposal, and the
+  app runs the gripper first, then the tip; the next check-in gives the step
+  after it." (an M3 plan wider open than its fraction: "set the gripper to
+  the 60% open ... and go to the HOVER POINT ..."); at the grasp point
+  "close the gripper and lift as ONE chained motion (the moving jaw pushes it
+  against the fixed jaw and the gripper holds it, then the tip rises 6 cm
+  straight up): "motion_proposal":{"move_delta_cm":{"left":0,"farther":0,
+  "up":6},"gripper_before":0.0}" (a contact task, push or slide, keeps the
+  plain close: the lift would pick the object up). A hover point the arm held
+  but stopped toward the object off is aimed past ("Do not descend from here:
+  go to the hover point aimed 0.7 cm past it ..."), and every step ends "Copy
+  it exactly (one step per motion, never skipping ahead)". The descent to the grasp point stays a
+  single move_delta_cm step, and so does the opening when the step after it
+  is the descent (the arm already above the grasp point), beside the object
+  (rise first) or at a hover point the arm stopped off. After the chained
+  close and lift the next check-in reads the jaws as before: stopped partway
+  ("it is lifted ... reply done"), or closed all the way (missed: open and
+  plan again; a narrow object: check the image). The miss is judged where the
+  jaws closed (AiMeasurements ClosedOnNothing with NoteGripperMove's record:
+  the tip when the close was sent, with the GRASP PLAN it closed with), not
+  where the lift left the tip: 2026-10-01 18:56:43 judged by the tip alone,
+  4.6 cm above the grasp point, found no miss, kept the old plan, and the step
+  said it was made again from the can after the close. That sentence now
+  comes only with a plan made again after the miss (GraspPlanState
+  AfterMiss); a plan kept marked missed says the camera has not measured the
+  object clear of the gripper since. The closed jaws' rise to the HOVER POINT
+  height goes on above the target the arm holds when that rise would end
+  within 0.5 cm of it (and is never 1.0 cm or less): at 18:56:43 the lift
+  held Z 12.2 with the tip stopped at Z 11.4, the rise to Z 12.7 was 0.4 cm
+  from it, so it would not move the arm, and the model copying it twice ended
+  the task; the step is now up 1.5, to Z 12.9 ("above the HOVER POINT height
+  Z 12.7 (the arm already holds a target at Z 12.2 and its tip stopped under
+  it, ...)"). The
+  stop advice says "move the object closer" only when the camera check passed;
+  otherwise it says to lock the head and recalibrate.
+  GRASP GAP (Settings > Grasp > Grasp gap at the fixed finger, lib/GraspGap.ts):
+  how far outside the object the GRASP PLAN puts the fixed jaw's pad (the
+  planner's c, GraspContext.ClearanceCm; default GraspRules.FixedJawClearanceCm
+  1.0 cm, 0.5 to 1.5 cm in 0.1 cm steps: below PlanMarginCm 0.5 the pad would
+  be inside the planner's own margin, and 0.3 and 0.4 planned nothing), saved
+  in this browser (SO101.Dashboard.v1.GraspGapCm; a saved 0.3 reads as 0.5)
+  and kept by "Reset display settings". A task plans with the gap set when it
+  was sent, so a change never re-plans a grasp whose object the gripper hides.
+  Below the default it applies only to a round object's sweep plan (a can, a
+  bottle: GraspPlan.ts ClearanceFor), the one plan that moves the pad out for
+  where the real fixed finger stands (FixedFingerOffsetCm) and checks the way
+  down with it 0.4 cm nearer still; any other plan keeps the default 1.0 cm,
+  its only room for a real finger the camera saw 1.5 to 2.1 cm nearer than the
+  arm model (2026-10-01 review: a 2.5 x 2.0 box refused at 1.0 planned at 0.5
+  with no such check). Above the default it applies to every plan. Every check
+  of the plan runs with the gap it uses, so a gap too small for the gripper's
+  margins is refused with the reason, and where the gap is part of why, the
+  refusal (the model's text and the user's advice) says so (GraspGap.ts
+  GraspGapHint, from the refusal's code and the gap its best pitch used): a
+  pad below the default refused for a part too near the object ("path",
+  "palm") adds "the grasp gap at the fixed finger is set to 0.5 cm in
+  Settings (the default is 1.0 cm): a wider gap may plan it"; one above the
+  default refused as too wide for the jaws adds "...: the wider the gap, the
+  farther the moving jaw must close" (a wider gap makes that worse, so it
+  never says a wider one may plan it). The plan text says the gap ("..., 0.8
+  cm outside its left-near side ... That 0.8 cm is the grasp gap the user set
+  for the fixed jaw."), or, where a setting below the default was not used,
+  "The user set the grasp gap to 0.5 cm, but the fixed jaw keeps the default
+  1.0 cm beside the usb drive: only a round object's GRASP PLAN corrects for
+  where the real fixed finger stands." (GraspPlan GapSetCm). grasp_plan
+  records clearance_cm and grasp_gap_cm. The 18:53 can (TestGraspReplay):
+  1.0 cm plans as logged; 0.8 plans at a flatter wrist (-20.6), the pad 0.8 cm
+  from where the real fixed finger meets the can (2.5 cm from the camera's
+  can); 0.7, 0.6 and 0.5 are refused (the fixed finger would come within 0.4
+  cm of the can if the real finger stood 0.4 cm nearer than planned). A
+  refused plan takes 7-12 s, as any refusal's pitch scan does: in a worker
+  since 2026-10-07 (audit M4), the page handling clicks meanwhile.
+
+  BEST-EFFORT GRASPS (GraspRules.BestEffort, 2026-10-04, Aaran: "It won't
+  grab the pill bottle, just let it try unless your code is totally sure it
+  can't grab it"). When the strict and the fallback passes find no plan,
+  PlanGrasp plans once more (BestEffortPlan, within BestEffortPlacements
+  placements, never a clock: 2026-10-07 audit M3) holding only what is
+  certain: the arm reaches the printed grasp and hover points
+  (IK, joint limits), no link's CAD box meets the basket, cart or body, the
+  desk floor, every other measured object (the guard holds them too), an
+  object thinner than the closed pads, one the open jaw is already in, one
+  the moving jaw closes past or whose slice misses the jaws' plane, and a
+  pad that faces it not at all. What only predicts a grip that may fail
+  becomes a warning: the jaws not reaching 1.5 cm past its centre, the palm
+  within 1.0 cm of it on the way down, the grip's friction ("squeeze it out
+  past the finger tips"), the push toward the tips, the jaw table's 5 cm
+  window, a top edge under the moving jaw, a pad that faces it less than
+  0.4 cm, a gripper part near the object it grasps (it may push it), and a
+  round object's assumed width (it is also planned as measured, its padded
+  box: a 5.3 x 2.8 cm reading is not surely a 7.1 cm disc). Every pitch from
+  the steepest that reaches it to level, mid-height, a cm at a time up to
+  3 cm higher and 3 cm lower, and the head start along the fingers down to
+  none where the arm reaches no deeper; the plan with the fewest warnings,
+  the gentler grip among equals, within that work (about what the old 6 s
+  covered on this PC when idle, the same however busy it is; a measured
+  scene's boxes make each placement count for more). The plan's Warnings
+  go to the model (TASK OBJECT line: "BEST-EFFORT GRASP: the app is not
+  sure this grasp holds the
+  ... (...), ... the user approves each move"), to the approval card
+  ("Best-effort grasp, may not work: ..."), and to the session record
+  (grasp_plan warnings). The guard holds the neighbours as before, and the
+  object a best-effort plan grasps everywhere but along the plan's own
+  descent (OnPlannedDescent, 2026-10-07 audit M9); the plan lock draws no
+  corridor for it. The advice searches (a spot closer to the arm, a neighbour moved)
+  still look for a plan with every check. Not reached at its centre at
+  mid-height or up to 3 cm higher or beside it, the reach scan also tries up
+  to 3 cm lower before calling it out of reach.
+  The cases (TestGraspReachRefusal.mjs): 08:30:52 and 16:43-16:45 the pill
+  bottles and 16:49 the black cube plan with warnings; 16:48:45 the black
+  block 45.1 cm out stays OUT OF REACH (the tip reaches at most about 43 cm
+  along its bearing, its near face is 44.1 cm out). The cube's 1.2 cm side
+  cannot be put across the jaws by the wrist roll: level jaws close only
+  across the arm's reach, and turned 90 deg they need the fingers pointing
+  down, while 40 cm out the arm reaches the cube no steeper than -41 deg.
+
+  THE DEEP GRASP (GraspRules.DeepGrasp, 2026-10-04, Aaran: "It needs to go
+  like one inch farther into the object. In the CAD view I want the
+  wireframe of the grab object to be almost touching the servo of the
+  gripper"). A round object's sweep plan (a straddle, strict or best-effort)
+  goes as deep in the jaws as the palm and the STS3215 servo at the fixed
+  jaw's base let it: its prism PalmGapCm (0.25) from their CAD hull, 0.05
+  more at the planned pose for the printed point's rounding, at the grasp
+  pose and all the way down from the hover (PalmGap: GJK, src/lib/
+  ConvexGap.ts, on the hull vertices BuildGripperParts.py writes to
+  GripperParts.json, exact to 0.001 cm, never more than the meshes' gap: a
+  test checks it against the GLB's meshes with trimesh). Before, the palm's
+  samples kept PlanMarginCm + DepthToleranceCm (1.0 cm) and the plan went
+  only StraddleGoodCm (both jaws 2.0 cm past its centre) deep: the 08:31:44
+  bottle's palm stood 2.4 cm from it. Deeper the tip goes farther out along
+  the fingers, so it is no deeper than the arm reaches (and than its printed
+  grasp point passes the exact reach check); then, where the closing does
+  not hold, DeepStepCm shallower at a time (DeepTries in all, down to the
+  straddle's least). A deep plan more than DeepLookCm farther from the palm
+  than that (the arm reaching no deeper at its wrist) makes SweepScan try
+  StraddleLookOn more pitches and keep the deepest. The closing check does
+  not start it nearer the palm than the palm (DepthToleranceCm toward the
+  palm is capped by the room in the jaws' plane). The guard, the snap's
+  pose check, the plan lock and the tape correction judge the palm against
+  a deep plan's own object by the same exact gap (GuardPalmGapCm, 0.15),
+  the rest of the gripper as before. The plan records PalmGapCm and
+  ServoGapCm where its jaws close (GraspSagCm under the printed point); the
+  model is told ("It sits deep in the jaws, the gripper's palm and servo
+  0.3 cm from it at the GRASP POINT"), and grasp_plan records palm_gap_cm
+  and servo_gap_cm. The 08:31:44 bottle (39 cm out): 3.2 cm head start
+  (1.38 before), palm 0.5-0.7 cm from it (its reach stops it there); the
+  16:41 pill bottle (34.7 cm): 2.8 cm, 0.3 cm. 08:30:52's bottle now plans
+  with every check. Boxes keep the drift's head start (deep in the jaws the
+  moving jaw meets a corner), and a round object planned as measured on the
+  best-effort pass is a box. DeepGrasp false: as before, for the replays.
+
+STEP 12 - HOW A TASK ENDS (EndAiTask)
+  Reset AI context (the eraser button beside Send) ends any task this way
+  (source context_reset), then clears the model's whole context: its
+  conversation turns and its notepad (POST /notepad ""). Ollama keeps no
+  conversation between calls, so the next message starts fresh.
+  Every way a task ends goes through one function: Stop task, Stop and hold,
+  the emergency stop, a bridge motion fault or protection trip, a change of
+  the arm's configuration (home, joint limits, CAD alignment, workspace frame,
+  collision model), Automatic calibration, Disconnect, Manual mode, Block, a
+  time limit or failed request, a new prompt replacing the task, a moving arm,
+  Reset AI context, and the app's own stops (StopTaskWithReason). It:
+    - aborts the model or /locate call in flight (the capture countdown, the
+      arm-still wait and the depth image stop too). A reply that arrives
+      afterwards is never shown or approvable. "Stop task" used to leave the
+      call running, and its reply became an approvable proposal;
+    - leaves nothing approvable (the proposal and the settle wait go);
+    - drops a chained motion's second leg if it was not sent yet: it is never
+      sent, the chat adds "The second part of the chained motion was not
+      sent." and the record gets chain_aborted {reason, source, part,
+      dropped}. This holds for a chain that is its task's last motion too,
+      and for a new task sent meanwhile. Stop task alone
+      does not stop a leg already moving (Stop and hold does);
+    - says why in the chat: "Stopped: <reason> <advice>", with the bridge's
+      own text for a fault ("the bridge reported a motion fault: shoulder_lift
+      drifted 600 steps past its hold point - re-hold manually.");
+    - records one task_end {reason, source} per task. Sources: stop_task,
+      stop_and_hold, emergency_stop, motion_fault, configuration_change,
+      self_calibration, disconnect, manual_mode, block, new_task, arm_moving,
+      timeout, error, camera_gate, bridge_refused, step_limit,
+      motion_not_started, motion_timeout, chain_interrupted (Coast, Hold,
+      Home or another motion while a chained motion's first part ran), app;
+      and model_done, model_ask, model_no_motion when the model's reply ends
+      the loop (a final motion it proposed with done stays approvable as a
+      single step). The task
+      recording's reason is the same text.
+  With no task, request or proposal left it does nothing. The fault handler
+  runs on every 30 Hz state frame while a fault stays latched, so it ends the
+  task on the first frame and records nothing more. The fault itself is
+  logged and recorded once when it appears (bridge_fault {kind, reason, joint,
+  details}, with kind and joint from the bridge's last_bridge_event when it
+  matches), and "Bridge fault cleared" is logged when Hold clears it. On
+  2026-09-29 07:57 (and twice on 09-28) a latched fault ended the task with no
+  event and no message, and the model's reply was dropped 2 s later.
+  task_stop (the app's stops and Stop task) and ai_stopped (Disconnect, Manual
+  mode) are still recorded as before, next to task_end.
+
+NOTE ON THE CAMERA / IMAGES
+  Captures are flipped left-right only for a camera facing the arm (Settings >
+  camera view); the Orbbec on the robot's head looks forward and is sent as seen.
+  Each capture carries its own mirroring to /locate, /depthcam/depth and the
+  calibration endpoints. When nothing could be measured (for example before
+  calibration) the model is told so and warned not to invent coordinates.
+  The depth image is in the camera frame; it is there so the model can see shape
+  and distance. Coordinates come from MEASURED OBJECT POSITIONS, which the
+  calibrated depth camera computes in the robot's frame. The system prompt puts
+  the table at WorkspaceFrame.json's TableZCm and a hard floor 1 cm under it,
+  which the app also enforces on AI targets everywhere outside the top tray's
+  open top (OverBasket in src/lib/AiTableFloor.ts: CollisionModel.json's
+  BasketTrayBoundsCm, display X -20.7..20.8, Y -6.8..23.3; the prompt tells the
+  model "Y less than 23.3"). It used the whole cart's bounds, which reach Y
+  29.1 over the desk in front of the tray: once the tray's front wall moved to
+  Y 23.3 (basket surface v2, section 9), a target at Z -5 on the desk there
+  was exempt from the floor and collided with nothing. The snap's rim rule
+  (STEP 6) uses the same footprint.
+  A target exactly on the floor passes (the display/model round trip used to
+  turn -3.3 into -3.3000000000000003 and refuse it). The floor also holds the
+  lowest point of the gripper and its moving jaw in the target pose
+  (AiJawFloorReason, from the convex hull of their meshes in
+  src/lib/GripperHull.json, written by scripts/BuildGripperHull.py): a flat
+  wrist hangs the jaw up to 1.3 cm under the tip, so a tip on the floor
+  pressed the jaw into the desk. A move that does not lower the gripper is
+  allowed, so the arm can always rise out. The manual controls are not held to
+  either floor.
+  TableZCm is -2.3 cm, the desk measured on 2026-09-28 through the depth
+  calibration and by touching it with the gripper (it was 4.97, which put the
+  floor 6 cm above the desk and made every descent to an object impossible).
+  Each new task starts with an empty conversation; check-ins within a task keep
+  the last three whole turns, with old coordinates marked [stale].
+
+
+================================================================================
+9. THE PYTHON BRIDGE IN DETAIL  (back end/bridge_server.py)
+================================================================================
+
+The bridge is a FastAPI app wrapping a single BridgeController instance. It is
+the only component that touches hardware.
+
+MOTOR MODEL
+  6 Feetech STS3215 servos (4096 steps/rev), bus IDs 1..6. shoulder_pan..wrist_roll
+  use DEGREES normalization; gripper uses RANGE_0_100. Each servo is tracked by a
+  ServoRuntime dataclass: present_raw, target_raw, range_min/max, arc_inverted,
+  gui_angle_raw, command_raw, command_speed.
+
+ARC MATH (mirrors robotModel.ts)
+  A servo's usable travel is an ARC on the circular 0..4095 dial from range_min to
+  range_max (optionally inverted). TARGETS are clamped onto that arc; a 0..1
+  "fraction" measures distance along it. Measured positions are NOT clamped --
+  a hand-posed joint can sit outside its limits, and the controller has to see
+  where it is. Nothing drives it back on its own (not Hold, a limit change or
+  a reconnect): only a commanded, checked move does. The state reports such a
+  joint (servos.<name>.outside_limits). IK angles are computed relative to
+  the home position (the zero reference), scaled by 360/4096 and a per-joint
+  sign.
+
+MOTION CONTROL - one path for every move:
+  Every motion (sliders, IK send, Home) runs through the same closed-loop
+  VELOCITY follower. Goal_Speed is set proportional to how far the joint is from
+  its target, with a slow-down zone near the goal, so the joint glides in and is
+  then parked in POSITION mode holding that spot.
+  _send_slider_target_locked / _send_slider_velocity_locked implement the
+  follower; _stop_slider_velocity_locked parks a joint once it arrives.
+
+  Home used to be the exception, writing Goal_Position directly in POSITION mode.
+  That broke: parking a joint zeroes Goal_Speed, nothing restored it, and a
+  position write with a profile speed of 0 does not move. Home now streams like
+  everything else, as a checked route at the motion-speed throttle: 100% is a
+  1750 steps/s top ceiling with lower per-joint ceilings for the joints that
+  lift the arm and the gripper; startup is 18% (315 steps/s). See
+  Cad/MotionSpeed.md and back end/test_bridge_home.py.
+
+  The same dead Goal_Speed also made HOLD weak: a parked joint sat in position
+  mode unable to chase its goal, so the arm could be pushed off target against
+  only light resistance. Parking now re-arms the profile after writing
+  Goal_Position (that order matters -- entering velocity mode parks
+  Goal_Position at raw 0, so arming the speed first would send the joint
+  lurching toward 0).
+
+TORQUE / HOLD
+  Enabling torque first reads the live positions, writes each joint's
+  Goal_Position to where it physically IS, and arms the motion profile -- then
+  energises. Without that, Hold enabled torque against whatever Goal_Position
+  was left over, which for a joint that had been streaming is raw 0: the arm
+  would drive hard toward its lower endstop. Hold therefore means "lock where
+  the arm is right now", and is safe to press after hand-posing a coasted arm,
+  also with a joint outside its slider limits: the hold point is where the
+  joint is, never clamped into the arc (2026-10-07 audit H3: Hold drove such a
+  joint 150 steps to its limit at up to 160 steps/s, with no collision check).
+  toggle_torque with "enable" means that state (Hold pressed while holding
+  stops a motion and holds); a bare toggle_torque still toggles (the page no
+  longer sends one: self-calibration's Hold sends enable too). A joint outside
+  its arc is compared with its hold point, or its route stage's start, on the
+  same side of its excluded window (_slider_track_present): the plain track
+  position reads a raw outside the arc past the nearer end, so across the
+  window's middle two raws a step apart read a turn apart (hold-v4).
+
+HAND GUIDING
+  The Motion panel's sixth button (Manual mode, any device with the arm
+  password): Calibrate guiding until hand_guide_calibration.json exists, then
+  Hand guide, and Hold here while it runs (lib/HandGuide.ts; the bridge's
+  hand_guide and hand_guide_calibrate commands, docs/HandGuide.md). While it
+  runs a 100 Hz guide loop owns the servo bus (back end/GuideBus.py: one
+  SYNC_READ and one SYNC_WRITE a cycle, under the motor lock) and the 30 Hz
+  frame only supervises. The shoulder, elbow and wrist are driven in position
+  mode with goal = position + the steps that make the servo apply the gravity
+  model's effort (plus a little lead and friction feed-forward), capped by
+  Torque_Limit every cycle; pan, roll and gripper float (torque off) and are
+  energised with a small assist only on slow, steady moves (back end/
+  HandGuide.py). Any fault makes every joint go limp (AutoCoast), and so does
+  the emergency stop, whose label says "the arm drops" while guiding; Hold here,
+  Stop and hold and Hold hold it where it is, preloaded so nothing sags. The
+  page that started it sends hand_guide_heartbeat every 0.5 s; 3 s without one
+  (the page closed, a phone asleep) holds. Moves, Home, Set Home, limit edits,
+  captures and AI requests wait for Hold here; AI mode holds first.
+
+SERVO-STEP ROUNDING AND IK REFUSALS
+  QuantizeCartesianPose rounds each IK joint to its nearest servo step; when
+  that misses the send tolerance (0.1 cm, 0.25 deg) the pose itself meets, it
+  tries the neighbouring step of each joint and keeps the combination closest
+  to the request within both (2026-09-28 22:49: a 0.236 deg solve rounded to
+  0.296 deg and was refused). The nearest rounding is kept whenever it fits.
+  An IK or rounding refusal says how close it came and which wrist pitch
+  reaches the point (EndpointRefusal): "...: the closest pose misses by 0.043
+  cm and 0.32 deg (limits 0.1 cm and 0.25 deg); wrist -43.1 deg reaches this
+  point", or "...: the tip gets no closer than N cm to it". /health and the
+  state report ik_solver_source (a hash of the loaded CadKinematics.py), and
+  /health ik_solver_source_stale, so a bridge still running an older solver
+  shows.
+
+GRASP HOLD (back end/MotorProtection.md)
+  A gripper closing (toward target_fraction 0.0) on a route that moves
+  nothing else, and stopped by an object (under 2 steps of progress in 0.5 s
+  while more than 8 steps short), is held in position mode 8 steps
+  (GRIPPER_GRASP_SQUEEZE_RAW) past where it stopped. The 2 s stall trip
+  coasted the whole arm on a grasp (fake-bus simulation of the AI's close
+  step). The servo's state shows grasp_hold
+  and a grasp_hold event is recorded. Any new gripper command, Stop, a trip or
+  Coast ends it; every other stall still trips.
+
+SERIAL LINK DROPS (reopen-v1, back end/MotorProtection.md)
+  2026-10-01 19:07 the arm's USB serial adapter dropped off the USB bus for
+  23 s; the servo SDK was left "in use" and the bridge never reopened COM4, so
+  Hold and the emergency torque-off failed for 15 minutes. Now every servo
+  transaction releases the port whatever happens, a port error marks the port
+  lost, and the control loop reopens the same port every 0.1 s. While it is
+  down every joint shows stale and moves, Hold, Home and Set Home are refused
+  with the reason. A drop while the arm holds still ends with it holding once
+  every joint reads back the same (within 30 steps, torqued, fault-free, in
+  position mode) within 2 s; a move in progress, a longer drop, or 3 drops in
+  60 s latch a fault, and torque-off is sent the moment the port returns (the
+  arm then coasts: support it). A coasting arm is read again too: a joint
+  found holding torque (e.g. a connect cut short after its goal seeds) is
+  coasted, and a fault read just before the drop still latches. Emergency stop
+  never claims a coast it could not send. The status says what happened ("USB serial link dropped for 0.4 s;
+  reconnected; holding at the last position"), the state carries serial_link
+  (state ok/down, counts, the latest note), the dashboard's ARM lamp reads
+  LINK LOST while it is down, and /health reports serial_link_version.
+
+DELAYED CONTROL FRAMES (back end/MotorProtection.md)
+  A control frame that starts more than 750 ms after the last one ended
+  (ControlHeartbeatLimitS) trips protection while anything moves: a joint in
+  velocity mode keeps its last speed meanwhile, and the servos have no timeout
+  for a silent host. An arm holding still from the end of the last frame to
+  now (no route, stream or correction, every speed 0, each servo holding its
+  own position goal) is read again instead, as after a serial link drop
+  (within 30 steps of where it held, torqued, fault-free, in position mode),
+  and goes on holding; anything else trips. 2026-10-04 23:11:14 a 1.56 s delay
+  with nothing moving coasted the arm extended over the desk and dropped it.
+  A delay held through is recorded as control_delayed, and the status says so
+  for 20 s. Every frame 300 ms late or long is recorded as control_stall with
+  what it waited for (the motor lock and who held it, the frame's own steps,
+  or the CPU), and the running bridge writes every thread's stack to
+  control_stalls.log beside bridge_events.jsonl when a frame is 0.5 s overdue
+  (the cause of the 1.1-1.7 s stalls is not known yet).
+
+MEASURED SCENES ON ROUTES (SceneSafety.py, SceneGeometry.py)
+  An AI move approved on a capture's measured scene carries its scene id, and
+  the route is checked against that scene's obstacles and observed free
+  space. When the scene changes or expires mid-route, or the configuration
+  changes (Home, a limit, a current angle), the route stops and holds, torque
+  on (HoldRoute); until 2026-10-07 these latched a fault and coasted every
+  joint, dropping the arm. A scene that would expire before the route could
+  finish is refused at the start, /locate refuses while such a route runs,
+  and scene ages run on the monotonic clock. Home and manual moves are never
+  bound to a scene, and the scene is dropped when its route ends.
+  /locate registers a scene only for a unique task object. Task matches within
+  1.5 cm of each other are one object under several labels (the grounding
+  called one white holder "White holder" and "white device" on 2026-10-14):
+  the bridge keeps one (object_locator._OneTaskObject) and lists the others
+  with task_match false and task_twin_of. Matches at several spots get no
+  scene: the app reads them as candidates for the model to choose or ask
+  about.
+  Scenes are optional (2026-10-14, Aaran: "just remove the scene verification
+  thing"). A scene that decodes whole and binds every task match is used as
+  above: its support is the task's floor, its obstacles and free space go to
+  the route. Without one (none registered, a malformed scene, a scene id that
+  does not match, several task matches) nothing stops: the app reads the
+  objects as it did before measured scenes (ReadLocateResponse), as desk
+  objects with no scene geometry, and the task goes on under the desk rules
+  (TaskSupport: the desk floor, a declared surface's own rules; a support
+  only the camera measured reads as "resting on another object"). Commands
+  then name no scene, so the bridge plans them against the basket, body and
+  rearward limit as before scenes. The camera check, reach, the bridge's
+  route certification, the grasp guards, the NEXT STEP and the approval of
+  every move are unchanged. There is no scene_unverified stop any more; why a
+  scene was not used is logged quietly as the vision record's scene_note.
+
+BRIDGE EVENTS
+  Motion faults, protection trips, motion aborts, grasp holds, control delays
+  held through (control_delayed) and serial link
+  drops and recoveries (serial_link_lost, serial_link_recovered,
+  serial_link_failed, with counts) are appended, one JSON line each, to
+  captures/<date>/recording/bridge_events.jsonl beside the app's ai.jsonl; the
+  state's last_bridge_event carries the latest, and the app records a
+  bridge_fault with its kind and joint.
+
+BASKET MODEL (basket-surface-v2)
+  The top tray's front wall sits where the head depth camera sees it: its rim
+  ridge at display Y 22.1-23.3, 2.39 cm nearer the robot than the CAD put it
+  (BasketSurface.json FrontWallCorrection; Cad/PrepareCollisionModel.py
+  applies it when it rebuilds the surfaces). CollisionModel.json adds
+  BasketTrayBoundsCm (the tray alone; the app's floor footprint) and was
+  robot-body-directional-v7, so the app's version gate tells a bridge still
+  holding the old wall. Desk grasps just past the rim, which the misplaced
+  wall blocked (07:58 on 2026-09-29), are clear.
+  robot-body-cad-exact-v8 (2026-10-04, approved by Aaran: "If it won't hit the
+  basket in the CAD view, just assume it won't in real life"): the app's
+  BasketSurfaceReason and the bridge's checks refuse basket, cart and body
+  contact only where a link's CAD box meets the surface
+  (ContactTrackingAllowanceRaw 0), not where its 16-step tracking envelope
+  does. The rearward limit, the route monitor and braking keep the 16 steps
+  (JointTrackingAllowanceRaw). A gripper-only move is judged on the moving
+  jaw's boxes over its travel. 08:32 that day the bridge had refused to close
+  the jaws at the grasp pose the arm stood in beside the pill bottle: the
+  gripper box was 2.4 cm from the cart, only its envelope touched it. The
+  desk next to the cart is reachable nearer it than before (at X 10, Z -1.3,
+  from the default pose: v7 blocked every Y from 34 in, v8 reaches to Y 29).
+
+ROUTE END REACH (route_executor_version synchronized-v2, Cad/BasketAvoidance.md)
+  The route monitor lets a joint run past a flown waypoint by its reach (32
+  steps, or the wide/reduced reach) plus the 16-step allowance. A joint that
+  carries on into the route's last stage with less travel left than that
+  reach used to be accepted by the stage before and refused the moment the
+  last stage began: 2026-10-04 23:50:01 the pan stood 36 past its last
+  waypoint (17 steps from the end, 19 past it) and the arm coasted over the
+  desk. Such a joint now gets the difference past the route end, certified
+  with the last stage (EndReach; none where it does not certify), so the last
+  stage accepts what the stage before did. Braking still plans the stop
+  inside the allowance, so no route flies differently. A route stopped by a
+  latched fault is kept in route_timing.jsonl too, with the fault.
+
+THE refresh() CYCLE
+  refresh() = read all present positions, then write any active slider/IK velocity
+  commands. It is called ~30x/second by the WebSocket loop and after each command.
+
+KINEMATICS
+  Uses arm_geometry.py: forward_joint_positions / forward_tip_position /
+  wrist_tip_pitch_degrees and solve_tip_ik. The controller exposes:
+    - preview_ik(): solve for a preview without moving (POST /ik/preview)
+    - send_ik(): solve with tighter tolerance, convert angles -> raw, and stream
+      the joints to the target via velocity control.
+  Wrist pitch is always run through _closest_reachable_wrist_pitch first.
+
+COMMANDS (handle_command), received as JSON over the WebSocket (POST /motion
+  takes the same over HTTP):
+    connect, disconnect, move_servo, toggle_torque, go_home, set_home,
+    set_servo_limits, set_gui_angle, set_target, send_ik, toggle_elbow,
+    set_motion_speed, stop_motion
+  plus the special top-level "emergency_stop" (handled in the socket loop: it
+  coasts the motors, disconnects, and closes the socket).
+  stop_motion, toggle_torque with "enable", disconnect and emergency_stop run
+  at once, ahead of the queue: every command queued before them (on any
+  connection) is dropped unrun ("... not run: Stop, Hold or Coast was pressed
+  after it was sent"), and a route still planning ends at its next check
+  (2026-10-07 audit M2: Stop waited behind a planning route, which started,
+  then stopped). Disconnect and Emergency stop are deliberate disconnects
+  (back end/ConnectIntent.json): a later "connect" runs only with
+  "explicit": true, and from another device only with it.
+
+THE WEBSOCKET PROTOCOL  (/ws)
+  - The access rule first (ACCESS below): a page from another site is refused
+    at the handshake (403); another device's page sends {"type": "auth",
+    "password": ...} as its first message and gets {"type": "access", ...}
+    (a wrong one closes the socket with 4401).
+  - On connect: accept, refresh once, send a full "state" snapshot.
+  - Loop: wait up to 1/30 s for a client message.
+        - timeout -> refresh + send a fresh "state" snapshot (this is the ~30 Hz
+          state stream the UI animates from)
+        - message -> run the command, then send a "status" {ok,text} message and a
+          fresh "state" snapshot.
+  A "state" snapshot contains: every servo's present/target/limits/arc/gui_angle,
+  torque flag, arm_connected flag, status text, port, target_cm, wrist_pitch,
+  elbow_mode, the IK angles, the joint positions (in display space), each
+  servo's grasp_hold, and last_bridge_event.
+
+REST ENDPOINTS
+    GET  /health   -> liveness check ({service:"so101-backend-bridge"}) and
+                      the versions: bridge_version, safety_version,
+                      access_version, scene_version, robot_reference_version,
+                      ...; whether other devices may use the bridge
+                      (remote_access "password" or "off"). The one route other
+                      devices may read without the password.
+    POST /motion   -> the same commands as the socket, over HTTP
+    POST /emergency-stop -> coast and disconnect (a page's is a deliberate
+                      disconnect; the launcher's on Ctrl+C is not)
+    GET  /bus/stats -> servo transactions, failures and slow replies
+    GET  /ports    -> list of serial port device names
+    GET  /notepad  -> the AI notepad text
+    POST /notepad  -> save the AI notepad text
+    POST /ik/preview -> solve IK for a target without moving
+    GET  /depthcam/status   -> depth camera state, fps, USB link, calibration
+    GET  /depthcam/frame.jpg?after=N -> newest color frame after N (X-Frame-Seq)
+    POST /depthcam/depth    -> colorized depth for a frame {seq, mirrored}
+    POST /depthcam/point    -> 3D point under a pixel (camera and AI frame)
+    GET  /depthcam/check    -> table plane now vs the calibration (height, tilt)
+    GET  /selfcal/clicks    -> the run's clicks and skips (semi-automatic)
+    POST /selfcal/click     -> record a click on a pose's archived frame
+                               {pose_index, capture_archive, frame_index, u, v,
+                               mirrored, image_size}; data only, never moves
+    POST /selfcal/click/undo, /selfcal/click/skip -> undo the newest click / skip
+    POST /selfcal/solve     -> fit and save on success; {source: "manual"} fits
+                               the clicks
+    POST /locate            -> camera check, then measured objects; refuses
+                               with error_code camera_moved / camera_check_failed
+                               / camera_not_verified and a camera_check block;
+                               with task_object {phrase, label} each object
+                               carries task_match and task_query_only; every
+                               object carries refined, and with a tip region
+                               outside_calibration_cm
+
+ACCESS (back end/RemoteAccess.py; the dev server's own routes follow the same
+rule in scripts/RemoteAccess.ts)
+  Every route and /ws go through one middleware:
+    - This PC (a loopback client asking for 127.0.0.1 or localhost) needs
+      nothing, as before.
+    - Another device (the LAN, Tailscale; also the PC's own LAN address)
+      needs the remote password for everything except GET /health: commands,
+      the arm's state, the depth camera's pictures, the notepad, the ports.
+      With no password set (python SetRemotePassword.py --generate sets one)
+      it gets nothing. Only a salted scrypt hash is kept, in the git-ignored
+      back end/RemotePassword.json. Five different wrong passwords lock that
+      device out for 10 minutes.
+    - A browser request from any other site's page (its Origin, or
+      Sec-Fetch-Site cross-site) is refused, password or not, so a page that
+      happens to be open cannot drive the arm through ws://127.0.0.1:8000.
+      Clancy's page is the one on port 5181 or 5180 (SO101_DASHBOARD_PORTS
+      adds others), and CORS allows only it.
+    - A request through a proxy (X-Forwarded-For and the like) is never this
+      PC, and all such requests share one lockout, whatever address they
+      claim. The launchers start uvicorn with --no-proxy-headers.
+  Refused devices are written to the bridge's error log and to
+  bridge_events.jsonl as remote_access.
+  The dev server (scripts/RemoteAccess.ts) applies the rule to every request
+  it answers: another device without the password gets only the page's own
+  boot (/, src/, node_modules/, Vite's /@vite/ and /@react-refresh, the public
+  assets, the back end JSON files the app imports), everything else only with
+  it, and Vite's /__open-in-editor (starts an editor on this PC) answers only
+  this PC's own page and programs. Routes are matched as Vite's router matches
+  them, in any case and by the raw path as well as the normalised one, and the
+  page's boot is only a path no reading changes (2026-10-08: the path
+  "/__OPEN-IN-EDITOR/../src/main.tsx" passed as /src/main.tsx while Vite
+  routed it to its editor route). It takes X-Clancy-Password off each request,
+  so no route or proxy behind it (/ollama, /depth-server) forwards it.
+  Other devices use plain HTTP: over Tailscale WireGuard encrypts it, on a
+  plain LAN the password can be read off the network (README, "Using Clancy
+  from another device").
+
+
+================================================================================
+10. DATA FILES THE BRIDGE READS AND WRITES  (in "back end/")
+================================================================================
+
+  home_preset.json    The saved home pose: a raw step value per motor. Read on
+                      connect and by go_home; written by set_home. The home pose
+                      also defines each joint's IK zero.
+
+  gui_limits.json     Per-motor raw min/max + arc_inverted (the usable arc), and
+                      optional target limits. Read on startup/connect; written by
+                      set_servo_limits.
+
+  arm_geometry.json   The arm's measured link lengths, zero angles, joint signs,
+                      and IK settings (default elbow branch, etc.). Loaded once at
+                      startup; drives forward kinematics and solve_tip_ik.
+
+  OllamaOptions.json  num_ctx, num_batch, keep_alive and the message layout
+                      ("split") every Ollama call sends, the app's and the
+                      bridge's alike (a mismatch reloads the model), and
+                      "model": the one the app tries first (qwen3.8:27b).
+
+  BridgeVersion.json  The bridge's code version, reported as bridge_version
+                      and required by the page and RestartBridge.ps1.
+
+  RemotePassword.json The remote password's salted scrypt hash (ACCESS).
+                      Machine-local, git-ignored, never committed.
+
+  ConnectIntent.json  Whether the arm was disconnected on purpose: kept until
+                      an explicit Connect, across bridge restarts.
+                      Machine-local, git-ignored.
+
+  captures/<date>/recording/bridge_events.jsonl
+                      The bridge's motion faults, protection trips, motion
+                      aborts, grasp holds and serial link drops and
+                      recoveries, one JSON line each.
+
+  qwen_notepad.md     The AI's memory. Read by GET /notepad on startup;
+                      overwritten by POST /notepad whenever the AI returns a
+                      "notepad_update". Survives across sessions, but "Reset AI
+                      context" empties it (POST /notepad ""). The file is tracked
+                      in git and the running app rewrites it.
+
+
+================================================================================
+11. CONFIGURATION, PORTS, AND ADDRESSES
+================================================================================
+
+  Web app .............. http://127.0.0.1:5181
+        server.port in vite.config.ts (strictPort: if 5181 is taken it stops
+        rather than serve a port the bridge would refuse); scripts/run-app.ps1
+        passes --port 5181 too. It and the bridge listen on every interface;
+        other devices need the remote password (section 9, ACCESS).
+
+  Session recorder ..... http://127.0.0.1:8002 (this PC only)
+        back end/SessionRecorder.py, started by the dev server. Video only
+        while an AI task runs (5 s before it to 10 s after), kept 7 days
+        (back end/VideoRetention.py). SO101_RECORDER=0 turns it off.
+
+  Browser test suites .. the first free port of 127.0.0.1:5191-5199
+        UiTestLib.mjs: each suite serves this checkout itself, without
+        vite.config.ts, and its browser maps the ports above to a closed
+        port, so a test never reaches the live app, the arm or a camera.
+
+  Python bridge ........ http://127.0.0.1:8000  (HTTP) and ws://127.0.0.1:8000/ws
+        WS_URL / API_URL constants near the top of src/App.tsx
+
+  Ollama ............... default http://127.0.0.1:11434
+        set by the OLLAMA_BASE_URL environment variable, read in vite.config.ts.
+        The browser uses the "/ollama/..." prefix; Vite proxies + strips it.
+
+  AI request shape ..... POST /ollama/api/chat, stream false, think false,
+        temperature 0.2, num_predict 1024 (AiMaxOutputTokens), and num_ctx,
+        num_batch, keep_alive from back end/OllamaOptions.json (shared with
+        the bridge); src/lib/OllamaChat.ts, used by requestAiCompletion and
+        the warm-up in src/App.tsx
+
+  Revision attempts .... MAX_AI_REVISION_ATTEMPTS = 4
+  Preview throttle ..... PREVIEW_THROTTLE_MS = 80
+  UI animation rate .... FRAME_MS = 1000/30 ; bridge BRIDGE_FRAME_S = 1/30
+
+
+================================================================================
+12. SAFETY MODEL
+================================================================================
+
+  - HUMAN IN THE LOOP: the AI never moves the arm. Every motion waits in the
+    approval box until the operator clicks Approve. Block discards it. A
+    chained motion's two legs are shown in order and approved together; its
+    second leg runs only after the first has settled, is checked again
+    first, and is dropped by every stop.
+  - FEASIBILITY GATE: a proposal is checked against the local IK solver and the
+    configured joint limits before it can be approved; impossible proposals are
+    auto-revised (up to 4 times) or dropped.
+  - HARDWARE GUARDS: moving the arm requires bridge live + arm connected + torque
+    on; the app refuses and explains otherwise.
+  - EMERGENCY SHUTOFF: coasts the motors, clears pending commands, disconnects,
+    and closes the socket - independent of the AI flow.
+  - TASK ENDS: every stop, fault or time limit ends the AI task through one
+    path that aborts the request in flight, leaves nothing approvable, says
+    why and records it (STEP 12). A task never reads the arm's pose while the
+    arm moves, and refuses to start while the bridge has a fault latched.
+  - DESK FLOOR: an AI target, and the gripper's lowest point in its pose, may
+    not go more than 1 cm under the desk outside the top tray's open top; a
+    target the arm cannot reach is snapped at most 3 cm (at most 0.5 cm
+    lower, never below the floor) or refused. The manual controls are not held
+    to the floor.
+  - STOP FIRST: Stop and hold, Hold/Coast, Disconnect and Emergency Shutoff
+    run ahead of anything queued or planning (a POST /motion move that arrived
+    before them is cancelled too); Set Home, limit changes, a current angle and
+    Home wait until the arm has stopped.
+  - HOLD, NOT DROP: a measured scene changing or expiring mid-route, or the
+    configuration changing, stops the route and holds it (torque on); Hold
+    holds each joint where it is, and nothing drives a joint back into its
+    limits by itself.
+  - CAMERA CHECK: object positions come only from a capture whose camera check
+    passed. With no calibrated desk in view the gripper tape checks it; an
+    "assumed" camera (the tape could not judge) still runs the task but keeps
+    every [UNRELIABLE] tag and a tripwire: the desk's, or with no desk in view
+    the basket rim's (section 8, THE CAMERA GATE).
+  - BRIDGE VERSION: AI tasks wait while the running bridge is not the code the
+    page expects (back end/BridgeVersion.json) or a current angle is set.
+  - WHO MAY DRIVE IT: this PC without a password; another device only with
+    the remote password, and it never connects the arm by itself; a page from
+    another site never. After a Disconnect or Emergency stop no page connects
+    the arm again by itself until someone presses Connect.
+  - LOCAL PREVIEW: with no bridge, everything is simulated; nothing can move.
+
+
+================================================================================
+13. GLOSSARY
+================================================================================
+
+  raw             A motor position as a step count, 0..4095 (4096 = one turn).
+  fraction        A position expressed as 0..1 along a servo's usable arc.
+  arc / arc span  The portion of the dial between a servo's min and max limits.
+  arc_inverted    Whether the arc runs the "other way" around the dial.
+  gui_angle_raw   A joint's "current angle" override: shown in the panel only,
+                  never used for IK, routes or checks; AI tasks wait while set.
+  IK              Inverse kinematics: joint angles that put the tip at a target.
+  FK              Forward kinematics: the tip position given the joint angles.
+  elbow up/down   Which of the two IK elbow-bend solutions to use.
+  wrist pitch     The absolute pitch angle of the gripper, in degrees.
+  model space     The raw kinematics frame; the internal target is stored here.
+  display space   Human/AI frame: +X left, +Y farther, +Z up, with a home offset.
+  visual space    The frame the canvas draws and the X/Y/Z boxes use (X flipped).
+  the bridge      The Python FastAPI server that talks to the physical arm.
+  the notepad     The AI's memory file (qwen_notepad.md); Reset AI context
+                  empties it.
+
+================================================================================
+END
+================================================================================

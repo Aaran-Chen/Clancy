@@ -1,0 +1,58 @@
+/* The live camera remains above dashboard panels and floating settings. */
+.camera-window-layer { position: fixed; inset: 0; z-index: 210; pointer-events: none; }
+.dashboard-app .camera-window.robot-call { position: fixed; display: flex; flex-direction: column; padding: 0 !important; pointer-events: auto; border: 1px solid #87c3cc54; border-radius: 2px; background: #101c2bf5; box-shadow: 0 16px 52px #0008, 0 1px 0 #c4e6ee15 inset; overflow: hidden; min-width: 0; min-height: 0; }
+.camera-window[data-dragging="true"] { user-select: none; box-shadow: 0 20px 64px #000a, 0 0 0 1px #88d7c36b; }
+.camera-window-header { display: flex; flex: 0 0 43px; align-items: center; gap: 6px; padding: 0 8px 0 12px; border-bottom: 1px solid #91b9d520; }
+.camera-window-drag { display: flex; flex: 1; min-width: 0; height: 100%; align-items: center; gap: 9px; cursor: grab; touch-action: none; user-select: none; }
+.camera-window-drag:active { cursor: grabbing; }
+.camera-window-drag > svg { color: #7e9cab; flex-shrink: 0; }
+.camera-window-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.camera-window-title strong { font-size: 12px; font-weight: 500; color: #e1f4ed; }
+.camera-window-title small { display: block; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8dafb4; font-size: 8px; margin-top: 2px; }
+.camera-window-actions { display: flex; align-items: center; gap: 3px; }
+.camera-window-actions button { display: grid; place-items: center; background: transparent; color: #a9c8cf; border-radius: 2px; width: 27px; height: 27px; padding: 0; cursor: pointer; }
+.camera-window-actions button:hover { background: #7ccab91a; color: #c6f3e4; }
+.camera-window-content { flex: 1; min-height: 0; padding: 5px; }
+.camera-window-content[hidden] { display: none; }
+.dashboard-app .camera-window.robot-call .video-frame { height: 100%; width: 100%; min-height: 0; aspect-ratio: auto; border-radius: 2px; }
+.camera-window-resize { position: absolute; bottom: 1px; right: 1px; width: 19px; height: 19px; display: grid; place-items: center; color: #a1c9c3; background: #132632cc; border-radius: 2px 0 2px; cursor: nwse-resize; touch-action: none; }
+.camera-window .call-controls { right: 13px; bottom: 7px; }
+.camera-window .camera-popout-note { position: absolute; inset: 0; display: grid; place-content: center; padding: 22px; text-align: center; gap: 10px; color: #b9d6d4; font-size: 11px; background: #12202fe8; pointer-events: none; }
+.camera-window .camera-popout-error { position: absolute; top: 8px; left: 8px; right: 8px; padding: 8px; border-radius: 2px; background: #302a20ee; color: #eacb96; font-size: 10px; }
+.cad-shell .cad-selection-badge { top: 180px; }
+
+.camera-window-header[hidden] { display: none; }
+.camera-window-content { padding: 0; }
+.dashboard-app .camera-window.robot-call .video-frame { border: 0; border-radius: 0; }
+.camera-window-title strong { font-size: 13px; font-weight: 700; }
+/* Resize from any edge or corner; the bottom-right grip is the visible, keyboard-focusable one. */
+.camera-window-resize { z-index: 7; width: 16px; height: 16px; border-radius: 0 0 2px 0; opacity: .7;
+  background: linear-gradient(135deg, transparent 0 52%, #a1c9c3 52% 60%, transparent 60% 70%, #a1c9c3 70% 78%, transparent 78%); }
+.camera-window-resize:hover, .camera-window-resize:focus-visible { opacity: 1; }
+.camera-window-edge { position: absolute; z-index: 6; touch-action: none; }
+.camera-window-edge.edge-n, .camera-window-edge.edge-s { left: 16px; right: 16px; height: 6px; cursor: ns-resize; }
+.camera-window-edge.edge-e, .camera-window-edge.edge-w { top: 16px; bottom: 16px; width: 6px; cursor: ew-resize; }
+.camera-window-edge.edge-n { top: 0; }
+.camera-window-edge.edge-s { bottom: 0; }
+.camera-window-edge.edge-e { right: 0; }
+.camera-window-edge.edge-w { left: 0; }
+/* Corners are 16px: the window's rounded corner clips (and so cannot be clicked) the outermost few pixels. */
+.camera-window-edge.edge-ne, .camera-window-edge.edge-nw, .camera-window-edge.edge-sw { width: 16px; height: 16px; }
+.camera-window-edge.edge-ne { top: 0; right: 0; cursor: nesw-resize; }
+.camera-window-edge.edge-nw { top: 0; left: 0; cursor: nwse-resize; }
+.camera-window-edge.edge-sw { bottom: 0; left: 0; cursor: nesw-resize; }
+.dashboard-app .camera-window.robot-call.call-minimized { border-radius: 2px; }
+.dashboard-app .camera-window-tile { display: grid; place-items: center; width: 100%; height: 100%; padding: 0; border: 0; color: #a8f4de; background: linear-gradient(145deg, #304a57, #152332); cursor: grab; touch-action: none; }
+.dashboard-app .camera-window-tile:active { transform: none; cursor: grabbing; }
+.dashboard-app .camera-window-tile:hover { background: linear-gradient(145deg, #3d6066, #1d333f); }
+
+/* The frame's one grid cell is exactly the frame. An auto row grew to the video's own
+   16:9 height in a window wider than 16:9, so the video overflowed while the overlay
+   (and the hover depth lookup) used the frame and no longer lined up with it. */
+.robot-call .video-frame { grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
+/* Depth overlay: its own layer over the live view, never part of a capture. */
+.robot-call .depth-overlay { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; object-fit: contain; opacity: .55; pointer-events: none; }
+.robot-call .depth-legend { position: absolute; left: 8px; bottom: 8px; z-index: 3; padding: 2px 8px; border-radius: 2px; background: #000000a8; color: #e8f4f2; font-size: 11px; font-variant-numeric: tabular-nums; pointer-events: none; }
+/* With the overlay on, hovering reads the depth under the cursor into the legend. */
+.robot-call .video-frame[data-depth-hover="true"] { cursor: crosshair; }
+.camera-window-actions button[aria-pressed="true"] { background: #7ccab92e; color: #c6f3e4; }
