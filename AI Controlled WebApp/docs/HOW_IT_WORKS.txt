@@ -1095,6 +1095,44 @@ STEP 8 - THE REVISION LOOP (up to MAX_AI_REVISION_ATTEMPTS = 4)
   planned_step {offered, why, step, motion, refused} and the approve record's
   motion carries planned: true.
 
+  THE APP RUNS THE GRASP PLAN'S STEPS ITSELF (lib/AppPlannedSteps.ts, 2026-10-25):
+  each grab check-in cost a /locate (about 11.7 s) and a model call (about 13.2 s,
+  80% of it the prefill of an 8,100-8,400-token prompt, nothing cached), and the
+  model mostly copied the app's own NEXT STEP back. So at a check-in after a
+  motion that went as planned, the app proposes the GRASP PLAN's NEXT STEP itself
+  and the model is not called. "As planned": the motion was the plan's NEXT STEP
+  (the app's, or the model's exact copy of it, SameStep), it settled within 1.5 cm
+  of its target with every servo but a closing gripper where it was sent, every
+  part of a chain ran, nothing was snapped; the GRASP PLAN was kept cleanly (no
+  note, corridor, tape correction, miss or re-plan) with the object measured and
+  bound this check-in (not hidden by the gripper: AppStepRules.RunWhileHidden is
+  off); and the step has a JSON and needs no judgement from the image (no "image",
+  "reply ask"). The step is the line's JSON parsed, snapped and checked exactly
+  like a reply, and offered only exactly as planned (a step the snap would move,
+  one that fails its checks, a no-op or a repeat goes to the model). The card is
+  headed "App's planned step" and says "This is the app's planned NEXT STEP from
+  the GRASP PLAN, proposed by the app without asking the AI: nothing unexpected
+  happened since the last step. Check it before approving."; the user approves
+  every motion as before, and the step cap, Stop, faults and timeouts are as for
+  any motion. After the plan's lift with the jaws holding the object (closed
+  partway), a grab-only request ("grab/grasp/pick up/lift the X", nothing else:
+  GraspOnlyRequest) ends there (task_end source app_done) unless the object is
+  still measured where it stood; any other request goes to the model. The fresh
+  /locate, the camera checks, the plan keep and the guard run at every check-in
+  as before. Every other check-in calls the model, and the first call after app
+  steps (a check-in, or a new task's first call after a task that ended, e.g. by
+  Stop task or a fault) gets a line after the AUTO CHECK-IN head: "STEPS THE APP
+  RAN ITSELF since your last reply ...: motion 2: ...; motion 3: .... The app asks
+  you now because <reason>." The motions list tags them "(the app's planned NEXT
+  STEP, proposed by the app without asking you)". A step the app offered after
+  the model did not follow the NEXT STEP (above) still goes back to the model.
+  The record: planned_step {app_run, offered or finished, model_call_skipped,
+  reason, step, motion, model_ms_saved_estimate (the task's last model call)}, and
+  each model call's reply record carries model_call_reason, model_ms and
+  app_steps_told. On the 2026-10-25 pill bottle every check-in after the first
+  had it hidden by the gripper, so with RunWhileHidden off such a grab still asks
+  the model at those steps.
+
 STEP 9 - SHOW THE RESULT
   - The conversational reply is shown in the AI panel.
   - If there is a possible motion, the approval box fills in:
@@ -1414,6 +1452,32 @@ STEP 11 - THE TASK LOOP (check-ins)
   cm of the can if the real finger stood 0.4 cm nearer than planned). A
   refused plan takes 7-12 s, as any refusal's pitch scan does: in a worker
   since 2026-10-07 (audit M4), the page handling clicks meanwhile.
+  FIXED JAW EXTRA STANDOFF (GraspRules.FixedJawExtraStandoffCm 2.54,
+  2026-10-25, Aaran watching the real arm: the fixed jaw came down "a tiny bit
+  too close to the grab object", "preferably 1 inch"). Every plan puts the
+  fixed jaw's inner face this much farther from the object than the grasp gap
+  (c above, or the setting), along the jaws' closing direction u, away from
+  the object: it is part of the pad's c (PadClearance), so every bound, check
+  and clearance runs at the new place, whatever the approach, wrist pitch or
+  roll. In the app's display frame that is +X (and a little -Y) for an object
+  ahead of the arm, -X in the bridge's mirrored frame: the 2026-10-25 02:03
+  pill bottle at X 9.3, Y 34.9 had its grasp point at X 12.7, Y 33.6. The
+  moving jaw closes that much farther, so PlanGrasp (PlanGraspStrictFirst)
+  tries each pass (the strict closing first) with the full extra, then with
+  none, and where that plans, places it again at that plan's wrist, height
+  and closing with every 0.5 cm (FixedJawExtraStepCm) of extra from 2.0 down,
+  the first that plans with the jaws as far around it kept (WiderAt): a grip
+  the strict closing holds with less beats one only the old closing holds with
+  more (with 1.5 cm more the 16:49 can was pushed 2.7 cm and left 0.2 cm inside
+  the fixed finger's tip). The best-effort pass and the free roll plan with
+  none. The plan records ExtraStandoffCm and counts it in ClearanceCm; the
+  model is told ("That 3.5 cm is the 1.0 cm grasp gap the user set for the
+  fixed jaw plus 2.5 cm more ..."). The 2026-10-22 pill bottle 4 cm closer:
+  pad 3.5 cm from it (was 1.05), wrist -12.5 (was -20), 80% open; the
+  2026-10-25 one: 1.5 cm more fits (pad 2.6 cm), at its wrist -12.4; small
+  boxes the jaw table planned get 0.5 to 1.5 cm more, by the jaw-plane sweep
+  where the table's 5 cm window ends. Set it to 1.27 for half an inch, 0 for
+  the gap as before.
 
   BEST-EFFORT GRASPS (GraspRules.BestEffort, 2026-10-04, Aaran: "It won't
   grab the pill bottle, just let it try unless your code is totally sure it
@@ -1526,7 +1590,11 @@ STEP 12 - HOW A TASK ENDS (EndAiTask)
       Home or another motion while a chained motion's first part ran), app;
       and model_done, model_ask, model_no_motion when the model's reply ends
       the loop (a final motion it proposed with done stays approvable as a
-      single step). The task
+      single step). A "continue" reply without a motion is first asked once
+      more, in the same check-in, for the motion it described (a no_motion
+      record, then a reply with attempt "no-motion"); only a second reply
+      without one ends the task as model_no_motion, saying it asked twice
+      (AiTaskLoop.ts NoMotionFeedbackPrompt, NoMotionTwiceReason). The task
       recording's reason is the same text.
   With no task, request or proposal left it does nothing. The fault handler
   runs on every 30 Hz state frame while a fault stays latched, so it ends the

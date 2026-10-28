@@ -78,18 +78,15 @@ class WorkspaceTests(unittest.TestCase):
         Original = Controller.ConfigurationKey()
         Frame = Bridge._load_json(Bridge.BACKEND_ROOT / "WorkspaceFrame.json")
         Frame["RobotFrame"]["ArmBasePositionCm"]["x"] += 1
-        with patch.object(Bridge, "_load_json", return_value=Frame):
+        with patch.object(Bridge.WorkspaceFrameFile, "Data", return_value=Frame):
             Self.assertNotEqual(Controller.ConfigurationKey(), Original)
 
     def TestBothXCutoffsExcludeCandidatesBeforeSolving(Self):
         Controller = Self.Controller
-        OriginalLoad = Bridge._load_json
-        Frame = OriginalLoad(Bridge.BACKEND_ROOT / "WorkspaceFrame.json")
+        Frame = Bridge._load_json(Bridge.BACKEND_ROOT / "WorkspaceFrame.json")
         Frame["CalibrationSampling"].update(XValuesCm=[-26, -25, -16, -15, 0, 15, 16], YValuesCm=[11], ZValuesCm=[0], WristPitchDegrees=[-40], MinimumXCm=-25, MaximumXCm=15, MinimumYCm=10)
         Offset = Controller.WorkspaceOffset()
-        def Load(Path):
-            return Frame if Path.name == "WorkspaceFrame.json" else OriginalLoad(Path)
-        with patch.object(Bridge, "_load_json", side_effect=Load), patch.object(Bridge, "solve_tip_ik", return_value={"reachable": False}) as Solve:
+        with patch.object(Bridge.WorkspaceFrameFile, "Data", return_value=Frame), patch.object(Bridge, "solve_tip_ik", return_value={"reachable": False}) as Solve:
             Controller.selfcal_poses()
         Sampled = [round(Call.args[1] - Offset["x"], 6) for Call in Solve.call_args_list]
         Self.assertEqual(Sampled, [-25, -16, -15, 0, 15])
@@ -152,14 +149,11 @@ class WorkspaceTests(unittest.TestCase):
     def TestAchievedXUsesConfiguredCutoffs(Self):
         Controller = Bridge.BridgeController()
         Offset = Controller.WorkspaceOffset()
-        OriginalLoad = Bridge._load_json
-        Frame = OriginalLoad(Bridge.BACKEND_ROOT / "WorkspaceFrame.json")
+        Frame = Bridge._load_json(Bridge.BACKEND_ROOT / "WorkspaceFrame.json")
         Frame["CalibrationSampling"].update(XValuesCm=[0], YValuesCm=[17], ZValuesCm=[6], WristPitchDegrees=[-40], PoseCount=1, MinimumXCm=-25, MaximumXCm=15, MinimumYCm=10)
-        def Load(Path):
-            return Frame if Path.name == "WorkspaceFrame.json" else OriginalLoad(Path)
         for ActualX, Expected in ((-26, False), (-25, True), (-20, True), (15, True), (16, False)):
             with Self.subTest(ActualX=ActualX), ExitStack() as Stack:
-                Stack.enter_context(patch.object(Bridge, "_load_json", side_effect=Load))
+                Stack.enter_context(patch.object(Bridge.WorkspaceFrameFile, "Data", return_value=Frame))
                 Stack.enter_context(patch.object(Controller, "WorkspaceOffset", return_value=Offset))
                 Stack.enter_context(patch.object(Bridge.BridgeController, "ValidateMotionPath", return_value=None))
                 Stack.enter_context(patch.object(Bridge.BridgeController, "PlanMotionRoute", return_value=[]))

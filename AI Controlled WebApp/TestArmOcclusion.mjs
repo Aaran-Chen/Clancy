@@ -72,8 +72,13 @@ const At1612 = Date.parse('2026-10-03T16:41:12.237Z'), At1636 = Date.parse('2026
 
 const Query = Api.ParseTaskObject('grab the pill bottle');
 // Planned as it was then, before the deep grasp (GraspRules.DeepGrasp, 2026-10-04: deeper in the jaws, it opens to 80%):
-// the recorded check-ins had the gripper 60% open at the hover, and the occlusion rules do not depend on the depth.
-const Shallow = Make => { const Saved = Api.GraspRules.DeepGrasp; Api.GraspRules.DeepGrasp = false; try { return Make(); } finally { Api.GraspRules.DeepGrasp = Saved; } };
+// the recorded check-ins had the gripper 60% open at the hover, and the occlusion rules do not depend on the depth. (Nor
+// with the fixed jaw's extra standoff, GraspRules.FixedJawExtraStandoffCm of 2026-10-25: the plan then had none.)
+const Shallow = Make => {
+  const Saved = [Api.GraspRules.DeepGrasp, Api.GraspRules.FixedJawExtraStandoffCm];
+  Object.assign(Api.GraspRules, { DeepGrasp: false, FixedJawExtraStandoffCm: 0 });
+  try { return Make(); } finally { [Api.GraspRules.DeepGrasp, Api.GraspRules.FixedJawExtraStandoffCm] = Saved; }
+};
 const Reach = Shallow(() => Api.TaskObjectReachability(Bottle, { Servos: Home, ElbowMode: 'up', ClearanceCm: 1 }, { Others: Api.NeighbourObjects(Frame1612, Bottle), Kind: Query.Name }));
 const Plan = Reach.Plan;
 // The plan's points and moves as the TASK OBJECT line prints them (AiMeasurements.ts GraspableText, NextPlannedGraspStep).

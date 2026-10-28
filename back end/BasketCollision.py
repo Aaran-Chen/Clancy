@@ -5,10 +5,28 @@ distant obstacles; directional enclosures refine possible contact, including
 independent servo progress (contact adds ContactTrackingAllowanceRaw, 0 since
 v8: CAD-exact). Every moving envelope, with the tracking tolerance, stays ahead
 of the rear workspace limit. Inconclusive checks fail closed.
+
+Speed (2026-10-25: two Home presses planned 5.7 and 5.9 s live). The checks are
+the same checks on the same models with the same margins, and every one decides
+as before; only how much work it takes changed, each step exact by construction:
+- the planner's search asks only whether an edge certifies (EdgeBlocked): the
+  boolean twins IntervalBlocked and RegionFailure take the very same tests, in
+  the same subdivision order and budget, the OR of a pose's tests in a cheaper
+  order; where a reason is worded, RegionCertify words it from IntervalReason
+  for the interval that failed, the reason it always gave;
+- a measured scene's obstacles and observed boxes are first tested all at once
+  with each test's own first, element-wise step (SceneCandidates, the coverage
+  prefilter); only what that step keeps runs on, one at a time, as before;
+- BasketSurface keeps each surface answer for the same numbers;
+- the candidate paths the search is about to try are checked side by side in
+  the route check workers (PathScout), which run this very code; the search
+  reads their answers in its own order, so it finds the route it finds alone.
+TestRoutePlanGolden holds every recorded request to the old planner's routes.
 """
 import itertools as Itertools
 import json as Json
 import math as Math
+import sys
 import time as Time
 from pathlib import Path
 
@@ -47,6 +65,8 @@ ContactReliefMarginCm = 0.3
 # from one, and its route monitor accepts the same region.
 WaypointReachRaw = 32
 WaypointReachDegrees = WaypointReachRaw * 360 / 4096
+# Seconds a check worker is given to answer a candidate path it started (PathScout); one takes well under 1 s.
+ScoutPatience = 10.0
 # A gripper-only move (CollisionWorld.ToolReason) is certified in jaw steps of at most this much,
 # each a small swept box, so the bound stays tight over a full close (about 70 degrees).
 ToolStepDegrees = 2.0
@@ -128,11 +148,12 @@ class CollisionWorld:
         Self.Bounds = BasketBounds(Frame)
         Self.Surface = Surfaces[Side]
         Self.BodySurface = BodySurfaces[Side]
-        Self.SceneObstacles = [(str(Item.get("label", "measured scene obstacle")), SceneSafety.ModelBounds(Item, Frame))
-                               for Item in Frame.get("SceneObstacles", [])]
+        Items = Frame.get("SceneObstacles", [])
+        Self.SceneObstacles = [(str(Item.get("label", "measured scene obstacle")), Bounds)
+                               for Item, Bounds in zip(Items, SceneSafety.ModelBoundsList(Items, Frame))]
         Carried = Frame.get("SceneCarried")
-        Self.SceneFree = ([SceneSafety.ModelBounds(Item, Frame) for Item in Frame["SceneFree"]]
-                          if "SceneFree" in Frame else None)
+        Self.SceneFree = SceneSafety.ModelBoundsList(Frame["SceneFree"], Frame) if "SceneFree" in Frame else None
+        Self.IndexScene()
         Self.MinimumY = (Model["RearwardLimit"]["MinimumDisplayYCm"]
                         + Frame.get("RobotFrame", {}).get("OriginAssemblyCm", Model["Mounts"][Side]["PanCm"])[1]
                         - Model["Mounts"][Side]["PanCm"][1])
@@ -171,6 +192,35 @@ class CollisionWorld:
             Self.Boxes.append(("held object", Link, Bounds.mean(axis=0), (Bounds[1] - Bounds[0]) / 2, Radii))
             Self.SplitWeights = Np.maximum(Self.SplitWeights, Radii)
 
+    def IndexScene(Self):
+        """Array copies of the measured scene, for the exact prefilters of SceneCandidates and SceneCoverageReason.
+
+        Rebuilt whenever SceneObstacles or SceneFree is replaced (a test may assign either); the arrays are only
+        ever used next to the lists they were built from (SceneIndexFor)."""
+        Obstacles, Free = Self.SceneObstacles, Self.SceneFree
+        Bounds = Np.array([Item[1] for Item in Obstacles], dtype=float).reshape(-1, 2, 3)
+        # BoxesOverlap's own OtherCenter and unpadded OtherHalf, element by element.
+        Self.SceneIndex = (Obstacles, Free, (Bounds[:, 0] + Bounds[:, 1]) / 2, (Bounds[:, 1] - Bounds[:, 0]) / 2,
+                           None if Free is None else Np.array(Free, dtype=float).reshape(-1, 2, 3))
+
+    def SceneIndexFor(Self):
+        Index = getattr(Self, "SceneIndex", None)
+        if Index is None or Index[0] is not Self.SceneObstacles or Index[1] is not getattr(Self, "SceneFree", None):
+            Self.IndexScene()
+            Index = Self.SceneIndex
+        return Index
+
+    def SceneCandidates(Self, Center, Rotation, Half, Padding):
+        """The scene obstacles BoxesOverlap(Center, Rotation, Half, Bounds, Padding) does not reject at its first,
+        world-axis test, in scene order. That test is element by element, so here it runs on every obstacle at
+        once with the same arithmetic; the rest of BoxesOverlap still runs on each obstacle it leaves. A 1188-box
+        scene took 8 ms per arm box one obstacle at a time (2026-10-25 profile), about 0.1 s per pose check."""
+        _, _, Centers, Halves, _ = Self.SceneIndexFor()
+        if not len(Centers):
+            return ()
+        Reject = Np.any(Np.abs(Center - Centers) > (Halves + Padding) + Np.abs(Rotation) @ Half, axis=1)
+        return Np.flatnonzero(~Reject).tolist()
+
     @staticmethod
     def MotionRadii(Link, Radius):
         Radii = Np.zeros(len(Names))
@@ -187,7 +237,9 @@ class CollisionWorld:
             return "basket"
         if Self.BodySurface.Overlaps(Center, Rotation, Half, Padding):
             return "robot body or camera head"
-        for Label, Bounds in Self.SceneObstacles:
+        Obstacles = Self.SceneObstacles
+        for Index in Self.SceneCandidates(Center, Rotation, Half, Padding):
+            Label, Bounds = Obstacles[Index]
             if BoxesOverlap(Center, Rotation, Half, Bounds, Padding):
                 return Label
         return None
@@ -225,10 +277,14 @@ class CollisionWorld:
         return Self.SweptSceneReason(Center, Half, Radii, Transform, Frames, Motion)
 
     def SweptSceneReason(Self, Center, Half, Radii, Transform, Frames, Motion):
+        if not Self.SceneObstacles:
+            return None  # Nothing to meet (the loop below would find nothing): every check without a scene.
         WorldCenter = Transform[:3, :3] @ Center + Transform[:3, 3]
         Padding = Model["ClearanceCm"] + float(Radii @ Motion)
         Envelope = None
-        for Label, Bounds in Self.SceneObstacles:
+        Obstacles = Self.SceneObstacles
+        for Index in Self.SceneCandidates(WorldCenter, Transform[:3, :3], Half, Padding):
+            Label, Bounds = Obstacles[Index]
             if not BoxesOverlap(WorldCenter, Transform[:3, :3], Half, Bounds, Padding):
                 continue
             if Np.any(Motion):
@@ -244,7 +300,15 @@ class CollisionWorld:
             return None
         Center_, Rotation, Half_ = BoxEnvelope(Center, Half, Radii, Transform, Frames, Motion)
         Extent = Np.abs(Rotation) @ Half_ + Model["ClearanceCm"]
-        if not SceneSafety.Covered(Np.array([Center_ - Extent, Center_ + Extent]), Self.SceneFree):
+        Bounds = Np.array([Center_ - Extent, Center_ + Extent])
+        _, Free, _, _, FreeArray = Self.SceneIndexFor()
+        # Only the observed boxes that meet Bounds can cover any of it: Covered leaves every piece of Bounds as it
+        # is for one that does not (its own test, max(low) >= min(high) on some axis, holds for every piece then),
+        # so Covered decides exactly as over the whole list, cut-off included.
+        if len(FreeArray):
+            Apart = Np.any(Np.maximum(Bounds[0], FreeArray[:, 0]) >= Np.minimum(Bounds[1], FreeArray[:, 1]), axis=1)
+            Free = [Free[Index] for Index in Np.flatnonzero(~Apart).tolist()]
+        if not SceneSafety.Covered(Bounds, Free):
             return "gripper or held object enters space not observed by the depth camera"
         return None
 
@@ -286,25 +350,74 @@ class CollisionWorld:
         # Contact first: it is the more useful reason when both apply.
         if Contact:
             Motion = (Spread + (getattr(Self, "ContactSlack", Self.Slack) if Tracking else 0)) * Degrees
-            for Index, (Name, Link, Center, Half, Radii) in enumerate(Self.Boxes):
-                Transform = Links[Link]
-                if Link in ("gripper_link", "moving_jaw_so101_v1_link"):
-                    Unknown = Self.SceneCoverageReason(Center, Half, Radii, Transform, Frames, Motion)
-                    if Unknown:
-                        return Unknown
-                # Relief may not shrink an arm/held-object box through a measured shelf.
-                if Self.SceneObstacles:
-                    Reason = Self.SweptSceneReason(Center, Half, Radii, Transform, Frames, Motion)
-                    if Reason:
-                        return f"{Name.split('__')[0].replace('_', ' ')} could contact the {Reason}"
-                if Inset and Index in Inset:
-                    Half = Np.maximum(Half - Inset[Index], 0.0)
-                Reason = Self.SweptObstacleReason(Center, Half, Radii, Transform, Frames, Motion)
+            for Index in range(len(Self.Boxes)):
+                Reason = Self.BoxReason(Index, Links, Frames, Motion, Inset)
                 if Reason:
-                    return f"{Name.split('__')[0].replace('_', ' ')} could contact the {Reason}"
+                    return Reason
         if Rearward and Self.RearwardExcess(Links, (Spread + (Self.Slack if Tracking else 0)) * Degrees) > RearwardSlack:
             return RearwardReason
         return None
+
+    def BoxReason(Self, Index, Links, Frames, Motion, Inset):
+        """IntervalReason's contact checks for one link box (Self.Boxes[Index]): why it could touch something, or None."""
+        Name, Link, Center, Half, Radii = Self.Boxes[Index]
+        Transform = Links[Link]
+        if Link in ("gripper_link", "moving_jaw_so101_v1_link"):
+            Unknown = Self.SceneCoverageReason(Center, Half, Radii, Transform, Frames, Motion)
+            if Unknown:
+                return Unknown
+        # Relief may not shrink an arm/held-object box through a measured shelf.
+        if Self.SceneObstacles:
+            Reason = Self.SweptSceneReason(Center, Half, Radii, Transform, Frames, Motion)
+            if Reason:
+                return f"{Name.split('__')[0].replace('_', ' ')} could contact the {Reason}"
+        if Inset and Index in Inset:
+            Half = Np.maximum(Half - Inset[Index], 0.0)
+        Reason = Self.SweptObstacleReason(Center, Half, Radii, Transform, Frames, Motion)
+        if Reason:
+            return f"{Name.split('__')[0].replace('_', ' ')} could contact the {Reason}"
+        return None
+
+    def IntervalBlocked(Self, Low, High, Tracking=True, RearwardSlack=0.0, Inset=None, Contact=True, Rearward=True):
+        """Whether IntervalReason(Low, High, ...) gives a reason: the very same checks, only in another order.
+
+        IntervalReason returns the first of its checks that fails, so whether it fails is the OR of them all, and
+        an OR does not depend on the order it is taken in. The planner's search only asks that (a leg is clear or
+        not), and most of its pose checks fail, so here the cheap rearward test comes first and the link box that
+        failed last comes next (the box order of Self.BoxOrder, a permutation of Self.Boxes); a check that passes
+        still runs every test. Where the words matter (EdgeReason), RegionCertify asks IntervalReason itself for
+        the interval that failed, so every reason a caller sees is the one it was before.
+        """
+        if Self.MountReason:
+            return True
+        Cancel = getattr(Self, "Cancel", None)
+        if Cancel is not None and Cancel():
+            raise PlanningCancelled("Route planning stopped: the arm was stopped (Stop, Hold, Coast or emergency stop) "
+                                    "or another motion started while it planned. No motion sent.")
+        Mid = (Low + High) / 2
+        Spread = (High - Low) / 2
+        Links, Frames = Cad.Forward(Self.Geometry, dict(zip(Names, Mid)))
+        if Rearward and Self.RearwardExcess(Links, (Spread + (Self.Slack if Tracking else 0)) * Degrees) > RearwardSlack:
+            return True
+        if Contact:
+            Motion = (Spread + (getattr(Self, "ContactSlack", Self.Slack) if Tracking else 0)) * Degrees
+            Order = getattr(Self, "BoxOrder", None)
+            if Order is None or len(Order) != len(Self.Boxes):
+                Order = Self.BoxOrder = tuple(range(len(Self.Boxes)))
+            for Index in Order:
+                if Self.BoxReason(Index, Links, Frames, Motion, Inset):
+                    # A new tuple, never an edit: another thread may be walking the old one.
+                    if Order[0] != Index:
+                        Self.BoxOrder = (Index, *(Other for Other in Order if Other != Index))
+                    return True
+        return False
+
+    def FastChecks(Self):
+        """Whether the boolean shortcuts (IntervalBlocked, RegionFailure) stand for this world's own checks: not when
+        a test (or a subclass) replaced IntervalReason or RegionReason, which they would bypass."""
+        Type = type(Self)
+        return all(getattr(Type, Name, None) is Function and Name not in vars(Self)
+                   for Name, Function in _Checks.items() if Name in ("IntervalReason", "RegionReason"))
 
     def ToolReason(Self, Start, Goal):
         """Why opening or closing the gripper from Start to Goal (only the gripper changes) is unsafe, or None.
@@ -408,7 +521,15 @@ class CollisionWorld:
             return Self.IntervalReason(Low, High, False, RearwardSlack, **Only)
         return Self.IntervalReason(Low, High, False, **Only)
 
-    def EdgeReason(Self, Start, Goal, Budget=256, Relief=None, Reach=(0.0, 0.0)):
+    def EdgeBlocked(Self, Start, Goal, Budget=256, Relief=None, Reach=(0.0, 0.0)):
+        """Whether EdgeReason(Start, Goal, ...) gives a reason, for the planner's search, which only asks that.
+        Through EdgeReason itself where a test (or subclass) replaced it."""
+        if type(Self).EdgeReason is not _Checks["EdgeReason"] or "EdgeReason" in vars(Self):
+            Extra = {} if Relief is None else {"Relief": Relief}
+            return Self.EdgeReason(Start, Goal, Budget=Budget, **Extra) is not None
+        return Self.EdgeReason(Start, Goal, Budget, Relief, Reach, Why=False) is not None
+
+    def EdgeReason(Self, Start, Goal, Budget=256, Relief=None, Reach=(0.0, 0.0), Why=True):
         """Certify every pose the route monitor accepts, not just a tip line.
 
         That region is the independent-progress box widened by the tracking
@@ -426,16 +547,23 @@ class CollisionWorld:
         over the region widened by ContactSlack (0: the region the route commands,
         the reach included), the rearward limit over the region widened by the
         full allowance, as before.
+
+        Why False: True instead of the reason (EdgeBlocked), which then need not be worded.
         """
         Slack = getattr(Self, "Slack", 0.0)
         ContactSlack = getattr(Self, "ContactSlack", Slack)
         RearwardSlack = 0.0 if Relief is None else Relief["RearwardSlackCm"]
         Inset = None if Relief is None else Relief.get("InsetCm")
+        Words = {} if Why else {"Why": False}
         if ContactSlack == Slack:
-            return Self.RegionCertify(*Self.EdgeRegion(Start, Goal, Slack, Relief, Reach), Budget, RearwardSlack, Inset, None)
+            return Self.RegionCertify(*Self.EdgeRegion(Start, Goal, Slack, Relief, Reach), Budget, RearwardSlack, Inset, None,
+                                      **Words)
         Low, High = Self.EdgeRegion(Start, Goal, Slack, Relief, Reach)
-        Reason = (Self.RegionCertify(*Self.EdgeRegion(Start, Goal, ContactSlack, Relief, Reach), Budget, RearwardSlack, Inset, "contact")
-                  or Self.RegionCertify(Low, High, Budget, RearwardSlack, Inset, "rearward"))
+        Reason = (Self.RegionCertify(*Self.EdgeRegion(Start, Goal, ContactSlack, Relief, Reach), Budget, RearwardSlack, Inset, "contact",
+                                     **Words)
+                  or Self.RegionCertify(Low, High, Budget, RearwardSlack, Inset, "rearward", **Words))
+        if not Why:
+            return Reason
         # As one region certified both: the reason at its centre pose when there is one.
         Mid = (Low + High) / 2
         return Reason and (Self.RegionReason(Mid, Mid, RearwardSlack, Inset) or Reason)
@@ -453,9 +581,48 @@ class CollisionWorld:
         High = Np.where(Goal == Start, Start + min(Near, Far) + Reach[0], High)
         return Low, High
 
-    def RegionCertify(Self, Low, High, Budget, RearwardSlack, Inset, Check):
-        """EdgeReason's subdivided certificate of one region [Low, High] (Check: which test, None both)."""
+    def RegionBlocked(Self, Low, High, RearwardSlack=0.0, Inset=None, Check=None):
+        """Whether RegionReason(Low, High, ...) gives a reason (IntervalBlocked of the same interval)."""
+        Only = {} if Check is None else {"Contact": Check == "contact", "Rearward": Check == "rearward"}
+        return Self.IntervalBlocked(Low, High, False, RearwardSlack, Inset, **Only)
+
+    def RegionFailure(Self, Low, High, Budget, RearwardSlack, Inset, Check):
+        """RegionCertify's subdivision, deciding on RegionBlocked alone: None when the region certifies, else the
+        interval whose RegionReason RegionCertify returns (a centre pose as (Mid, Mid), or the region it gave up
+        on). It splits in exactly RegionCertify's order and budget: RegionCertify only ever branches on whether a
+        reason is None (IntervalReason's reasons are never empty), and that is what RegionBlocked answers."""
+        Weights = getattr(Self, "SplitWeights", None)
+        Weights = Np.ones(len(Low)) if Weights is None else Weights
+        Pending = [(Low, High)]
+        while Pending:
+            Low, High = Pending.pop()
+            if not Self.RegionBlocked(Low, High, RearwardSlack, Inset, Check):
+                continue
+            Mid = (Low + High) / 2
+            if Self.RegionBlocked(Mid, Mid, RearwardSlack, Inset, Check):
+                return Mid, Mid
+            if Budget <= 0:
+                return Low, High
+            Spread = (High - Low) * Weights
+            Index = int(Np.argmax(Spread))
+            if Spread[Index] < 0.2 * float(Weights.max()):
+                return Low, High
+            Budget -= 1
+            LeftHigh, RightLow = High.copy(), Low.copy()
+            LeftHigh[Index] = RightLow[Index] = Mid[Index]
+            Pending.extend(((Low, LeftHigh), (RightLow, High)))
+        return None
+
+    def RegionCertify(Self, Low, High, Budget, RearwardSlack, Inset, Check, Why=True):
+        """EdgeReason's subdivided certificate of one region [Low, High] (Check: which test, None both).
+
+        Why False: True instead of the reason, for a caller that only asks whether the region certifies."""
         Only = {} if Check is None else {"Check": Check}
+        if Self.FastChecks():
+            Failure = Self.RegionFailure(Low, High, Budget, RearwardSlack, Inset, Check)
+            if Failure is None:
+                return None
+            return Self.RegionReason(*Failure, RearwardSlack, Inset, **Only) if Why else True
         Weights = getattr(Self, "SplitWeights", None)
         Weights = Np.ones(len(Low)) if Weights is None else Weights
         Pending = [(Low, High)]
@@ -493,18 +660,60 @@ class CollisionWorld:
         Snap maps a pose to the nearest one the servos can hold exactly; every
         certified waypoint, both ends included, is snapped first.
         """
-        Snap = Snap or (lambda Values: Values)
-        Start, Goal = Snap(Start), Snap(Goal)
-        Count = max(1, Math.ceil(float(Np.max(Np.abs(Goal - Start))) / GateStepDegrees - 1e-9))
-        Points = [Snap(Start + (Goal - Start) * (Index / Count)) for Index in range(1, Count)] + [Goal]
+        Start, Points = Self.LegPoints(Start, Goal, Snap)
         Previous = Start
         for Point in Points:
             if Until is not None and Time.monotonic() >= Until:
                 return None
-            if Self.EdgeReason(Previous, Point, Budget=64):
+            if Self.EdgeBlocked(Previous, Point, Budget=64):
                 return None
             Previous = Point
         return Points
+
+    @staticmethod
+    def LegPoints(Start, Goal, Snap=None):
+        """LegGates' snapped start and its gates (the goal last): the edges it certifies, in order."""
+        Snap = Snap or (lambda Values: Values)
+        Start, Goal = Snap(Start), Snap(Goal)
+        Count = max(1, Math.ceil(float(Np.max(Np.abs(Goal - Start))) / GateStepDegrees - 1e-9))
+        return Start, [Snap(Start + (Goal - Start) * (Index / Count)) for Index in range(1, Count)] + [Goal]
+
+    def PathFailure(Self, Interior, Chains):
+        """PlanFrom's Clear for one candidate path, without a clock, as a check worker answers it (PathScout).
+
+        Interior: the path's bends, each a pose that must pass IntervalReason(P, P). Chains: per leg, None for one
+        already known clear, else LegPoints' (start, gates). As Clear, the bends first, then the legs in order,
+        each edge as LegGates certifies it, stopping at the first that fails. Returns {"interior": index of the
+        bend that failed or None, "legs": [(leg index, certified), ...] for every leg it checked}."""
+        for Index, Point in enumerate(Interior):
+            if Self.IntervalBlocked(Point, Point):
+                return {"interior": Index, "legs": []}
+        Legs = []
+        for Index, Chain in enumerate(Chains):
+            if Chain is None:
+                continue
+            Previous, Points = Chain
+            Certified = True
+            for Point in Points:
+                if Self.EdgeBlocked(Previous, Point, Budget=64):
+                    Certified = False
+                    break
+                Previous = Point
+            Legs.append((Index, Certified))
+            if not Certified:
+                break
+        return {"interior": None, "legs": Legs}
+
+    def Scouting(Self):
+        """Whether PlanFrom may ask the check workers (Self.Checks, set by the bridge with Self.CheckSource, the
+        geometry and frame this world was built from): only for this module's own checks, untouched, since the
+        workers run those; a test or subclass that replaced one plans in this process, as before."""
+        Checks = getattr(Self, "Checks", None)
+        if Checks is None or getattr(Self, "CheckSource", None) is None or not Checks.Ready():
+            return False
+        Type = type(Self)
+        return (all(getattr(Type, Name, None) is Function and Name not in vars(Self) for Name, Function in _Checks.items())
+                and all(getattr(Owner, Name, None) is Function for Owner, Name, Function in _Helpers))
 
     def CoarsenLeg(Self, Start, Gates, Until=None):
         """Drop gates from a certified straight leg wherever a longer stretch of it certifies at once.
@@ -517,7 +726,7 @@ class CollisionWorld:
         def Span(First, Last):
             if Last - First == 1 or (Until is not None and Time.monotonic() >= Until):
                 return Gates[First:Last]
-            if Self.EdgeReason(Start if First == 0 else Gates[First - 1], Gates[Last - 1], Budget=CoarseEdgeBudget) is None:
+            if not Self.EdgeBlocked(Start if First == 0 else Gates[First - 1], Gates[Last - 1], Budget=CoarseEdgeBudget):
                 return [Gates[Last - 1]]
             Middle = (First + Last) // 2
             return Span(First, Middle) + Span(Middle, Last)
@@ -532,9 +741,12 @@ class CollisionWorld:
     def PathCost(Path, EdgeCost):
         return sum(EdgeCost(Start, Goal) for Start, Goal in zip(Path, Path[1:]))
 
-    def ImprovePath(Self, Path, EdgeCost, Deadline, Lower=None, Upper=None, LegClear=None):
-        """Remove bends and pull them inward, certifying EVERY replacement leg."""
-        LegClear = LegClear or (lambda A, B, Until: Self.EdgeReason(A, B, Budget=64) is None)
+    def ImprovePath(Self, Path, EdgeCost, Deadline, Lower=None, Upper=None, LegClear=None, Prefetch=None):
+        """Remove bends and pull them inward, certifying EVERY replacement leg.
+
+        Prefetch, if given, is told the legs LegClear is about to be asked, in that order (PlanFrom's PathScout asks
+        the check workers for them ahead); it changes nothing else."""
+        LegClear = LegClear or (lambda A, B, Until: not Self.EdgeBlocked(A, B, Budget=64))
         Path = list(Path)
         for _ in range(4):
             # Try the shortcuts with the greatest time saving first. Do not
@@ -544,6 +756,8 @@ class CollisionWorld:
                 (Costs[End] - Costs[Begin] - EdgeCost(Path[Begin], Path[End]), Begin, End)
                 for Begin in range(len(Path) - 2) for End in range(Begin + 2, len(Path))
             ), reverse=True)
+            if Prefetch is not None:
+                Prefetch([(Path[Begin], Path[End]) for Saving, Begin, End in Shortcuts if Saving > 1e-8])
             Changed = False
             for Saving, Begin, End in Shortcuts:
                 if Time.monotonic() >= Deadline:
@@ -662,7 +876,7 @@ class CollisionWorld:
                         for Step in (min(Longest, Clear + 0.5), Clear):
                             Point = Snap(Np.clip(Start + Unit * Step, Lower, Upper))
                             if (Self.IntervalReason(Point, Point) is None
-                                    and Self.EdgeReason(Start, Point, Budget=64, Relief=Relief) is None):
+                                    and not Self.EdgeBlocked(Start, Point, Budget=64, Relief=Relief)):
                                 Escapes.append((EdgeCost(Start, Point) + EdgeCost(Point, Goal), Point))
                                 break
                         break
@@ -691,20 +905,33 @@ class CollisionWorld:
         certified through its gates, so every returned consecutive pair passes
         the full independent-progress check.
         """
+        Legs = {}
+        Snap = Snap or (lambda Values: Values)
+        Scouts = []
+        try:
+            return Self.PlanLegs(Start, Goal, Lower, Upper, Deadline, EdgeCost, LocalOnly, Snap, Legs, Scouts)
+        finally:
+            for Scout in Scouts:
+                Scout.Close()
+
+    def PlanLegs(Self, Start, Goal, Lower, Upper, Deadline, EdgeCost, LocalOnly, Snap, Legs, Scouts):
+        """PlanFrom's search. Once the direct leg failed, a PathScout (appended to Scouts) answers Clear and Leg
+        ahead where it was asked, when the check workers may (Scouting); an easy motion never waits on them."""
         Seconds = max(0.0, Deadline - Time.monotonic())
         SearchDeadline = Deadline - min(0.35, Seconds * 0.1)
-        Legs = {}
+        Scout = None
 
         def Leg(A, B, Until):
             Key = A.tobytes() + B.tobytes()
             if Key not in Legs:
+                Answer = None if Scout is None else Scout.Answer([A, B], Until)
+                if Answer is not None:
+                    return Legs.get(Key)  # Not there: interrupted at Until, as below.
                 Gates = Self.LegGates(A, B, Until, Snap)
                 if Gates is None and Time.monotonic() >= Until:
                     return None  # Interrupted, not blocked: do not remember.
                 Legs[Key] = Gates
             return Legs[Key]
-
-        Snap = Snap or (lambda Values: Values)
 
         def Expand(Path):
             Points = []
@@ -718,19 +945,67 @@ class CollisionWorld:
         Direct = Leg(Start, Goal, Deadline)
         if Direct is not None:
             return Self.RouteDicts(Self.CoarsenLeg(Snap(Start), Direct, Deadline))
+        if Self.Scouting():
+            Scout = PathScout(Self, Snap, Legs, Deadline)
+            Scouts.append(Scout)
 
         def Finish(Path):
+            Prefetch = None if Scout is None else (lambda Pairs: Scout.Ahead([[A, B] for A, B in Pairs]))
             Refined = Self.ImprovePath(Path, EdgeCost, min(Deadline, Time.monotonic() + 0.35), Lower, Upper,
-                                       LegClear=lambda A, B, Until: Leg(A, B, Until) is not None)
+                                       LegClear=lambda A, B, Until: Leg(A, B, Until) is not None, Prefetch=Prefetch)
             return Expand(Refined)
 
         def Clear(Path, Until):
+            Answer = None if Scout is None else Scout.Answer(Path, Until)
+            if Answer is not None:
+                return Answer
             for Point in Path[1:-1]:
                 if Time.monotonic() >= Until or Self.IntervalReason(Point, Point):
                     return False
             return all(Leg(Before, After, Until) is not None for Before, After in zip(Path, Path[1:]))
 
-        Candidates, Seen = [], set()
+        Candidates = []
+        Self.AddCandidates(Start, Goal, Lower, Upper, EdgeCost, Candidates, set())
+        Active = [Index for Index in range(len(Names)) if abs(Start[Index] - Goal[Index]) > 1e-6]
+        # Single-bend repairs certify far more useful routes per second here than
+        # the sampling fallback does, so they get the larger half of the clock.
+        LocalDeadline = SearchDeadline if LocalOnly else min(SearchDeadline, Time.monotonic() + Seconds * 0.55)
+        Ordered = [Path for _, _, Path in sorted(Candidates, key=lambda Item: Item[:2])]
+        for Position, Path in enumerate(Ordered):
+            if Time.monotonic() >= LocalDeadline:
+                break
+            if Scout is not None:
+                Scout.Ahead(Ordered, Position)
+            if Clear(Path, LocalDeadline):
+                return Finish(Path)
+
+        if LocalOnly:
+            raise ValueError("No small checked repair of the direct motion was found")
+
+        # Keep ordered moves as a fallback, but compare their cost and optimize
+        # a certified result rather than exposing each single-joint leg.
+        Orders = []
+        for Order in Itertools.permutations(Active):
+            Path, Current = [Start], Start.copy()
+            for Index in Order:
+                Next = Current.copy()
+                Next[Index] = Goal[Index]
+                Path.append(Next)
+                Current = Next
+            Orders.append((Self.PathCost(Path, EdgeCost), Path))
+        OrderDeadline = min(SearchDeadline, Time.monotonic() + Seconds * 0.15)
+        Ordered = [Path for _, Path in sorted(Orders, key=lambda Item: Item[0])]
+        for Position, Path in enumerate(Ordered):
+            if Time.monotonic() >= OrderDeadline:
+                break
+            if Scout is not None:
+                Scout.Ahead(Ordered, Position)
+            if Clear(Path, OrderDeadline):
+                return Finish(Path)
+        return Self.PlanRandom(Start, Goal, Lower, Upper, SearchDeadline, Leg, Finish)
+
+    def AddCandidates(Self, Start, Goal, Lower, Upper, EdgeCost, Candidates, Seen):
+        """PlanFrom's candidate repairs of the direct leg (one or two bends), with their cost and deviation."""
 
         def Add(Interior):
             Path = [Start]
@@ -771,37 +1046,11 @@ class CollisionWorld:
                 if UseGoal:
                     Point[Index] = Goal[Index]
             Add([Point])
-        # Single-bend repairs certify far more useful routes per second here than
-        # the sampling fallback does, so they get the larger half of the clock.
-        LocalDeadline = SearchDeadline if LocalOnly else min(SearchDeadline, Time.monotonic() + Seconds * 0.55)
-        for _, _, Path in sorted(Candidates, key=lambda Item: Item[:2]):
-            if Time.monotonic() >= LocalDeadline:
-                break
-            if Clear(Path, LocalDeadline):
-                return Finish(Path)
 
-        if LocalOnly:
-            raise ValueError("No small checked repair of the direct motion was found")
-
-        # Keep ordered moves as a fallback, but compare their cost and optimize
-        # a certified result rather than exposing each single-joint leg.
-        Orders = []
-        for Order in Itertools.permutations(Active):
-            Path, Current = [Start], Start.copy()
-            for Index in Order:
-                Next = Current.copy()
-                Next[Index] = Goal[Index]
-                Path.append(Next)
-                Current = Next
-            Orders.append((Self.PathCost(Path, EdgeCost), Path))
-        OrderDeadline = min(SearchDeadline, Time.monotonic() + Seconds * 0.15)
-        for _, Path in sorted(Orders, key=lambda Item: Item[0]):
-            if Time.monotonic() >= OrderDeadline:
-                break
-            if Clear(Path, OrderDeadline):
-                return Finish(Path)
-        # Bidirectional RRT. Each short leg is certified through its gates; the
-        # result is shortened before it is expanded.
+    @staticmethod
+    def PlanRandom(Start, Goal, Lower, Upper, SearchDeadline, Leg, Finish):
+        """PlanFrom's last resort: a bidirectional RRT. Each short leg is certified through its gates (Leg); the
+        result is shortened before it is expanded (Finish)."""
         Random = Np.random.default_rng(101)
         Trees = [([Start], [-1]), ([Goal], [-1])]
 
@@ -847,3 +1096,119 @@ class CollisionWorld:
                     Path = Left + Right[-2::-1] if Side == 0 else Right + Left[-2::-1]
                     return Finish(Path)
         raise ValueError("No clear route around the basket and robot body was found. Choose a different target or wrist pitch.")
+
+
+# The world's own checks, as defined here: the shortcuts above stand in for them only while nothing replaced them
+# (FastChecks: IntervalReason and RegionReason), and the check workers run them only while none was (Scouting).
+_Checks = {Name: getattr(CollisionWorld, Name) for Name in (
+    "IntervalReason", "RegionReason", "EdgeReason", "IntervalBlocked", "RegionBlocked", "RegionFailure", "RegionCertify",
+    "EdgeBlocked", "EdgeRegion", "BoxReason", "SweptObstacleReason", "SweptSceneReason", "SceneCoverageReason",
+    "SceneCandidates", "ObstacleReason", "RearwardExcess", "LegGates", "LegPoints", "PathFailure")}
+_Helpers = ((sys.modules[__name__], "BoxesOverlap", BoxesOverlap), (sys.modules[__name__], "BoxEnvelope", BoxEnvelope),
+            (Cad, "Forward", Cad.Forward), (BasketSurface.Surface, "Overlaps", BasketSurface.Surface.Overlaps),
+            (BasketSurface.Surface, "Check", BasketSurface.Surface.Check), (SceneSafety, "Covered", SceneSafety.Covered))
+
+
+class PathScout:
+    """PlanFrom's Clear answered ahead by the check workers (RouteCheckPool), for the candidate paths it is about
+    to try, in the order it tries them.
+
+    The search tries candidate paths one after another and takes the first whose bends and legs all certify.
+    On a route out of the basket most fail at their first edge, each after its whole subdivision budget (25 to
+    90 ms, about 55 of them on the 2026-10-26 02:05 Home, 3 of its 4.6 s offline). Here the next Window
+    candidates are checked side by side in the workers, each by PathFailure: the same bends, the same gates
+    (LegPoints, snapped here), the same edges in the same order, by the same code, fingerprinted. The search
+    still decides in its own order, reading their answers instead of checking; whatever is not answered when it
+    gets there (or a worker failed on) it checks itself, as before. Its result is the one it finds alone; only
+    the time changes, and with it how far it gets before its deadlines.
+    """
+
+    def __init__(Self, World, Snap, Legs, Deadline):
+        Self.World, Self.Snap, Self.Legs, Self.Deadline = World, Snap, Legs, Deadline
+        Self.Pool = World.Checks
+        Self.Ref = getattr(World, "CheckRef", None)
+        if Self.Ref is None:
+            Self.Ref = World.CheckRef = Self.Pool.WorldRef(*World.CheckSource)
+        Self.Window = 2 * max(1, sum(Each.Alive for Each in Self.Pool.Workers))
+        Self.Asked = {}
+        Self.Open = True
+
+    @staticmethod
+    def Key(Path):
+        return b"".join(Point.tobytes() for Point in Path)
+
+    def Ahead(Self, Paths, Position=0):
+        """Ask for Paths[Position:Position + Window] that were not asked yet."""
+        for Path in Paths[Position:Position + Self.Window]:
+            Self.Ask(Path)
+
+    def Ask(Self, Path):
+        Key = Self.Key(Path)
+        if Key in Self.Asked:
+            return
+        Chains, Legs = [], []
+        for Begin, End in zip(Path, Path[1:]):
+            LegKey = Begin.tobytes() + End.tobytes()
+            if LegKey in Self.Legs:
+                if Self.Legs[LegKey] is None:
+                    Self.Asked[Key] = None  # A leg already known blocked: Clear fails whatever else holds.
+                    return
+                Chains.append(None)
+                Legs.append((LegKey, None))
+                continue
+            Start, Points = Self.World.LegPoints(Begin, End, Self.Snap)
+            Chains.append((Start, Points))
+            Legs.append((LegKey, Points))
+        # Started before the planning deadline, a request is let finish (ScoutPatience): a worker cut off mid-check
+        # is stopped for good, and the next plan would have one fewer.
+        Future = Self.Pool.SubmitPatient((Self.Ref, "path", list(Path[1:-1]), Chains), Self.Deadline, ScoutPatience,
+                                         lambda: Self.Open)
+        Self.Asked[Key] = (Future, Legs)
+
+    def Answer(Self, Path, Until):
+        """Clear(Path, Until) from the workers' answer: True or False, or None where the search must check it
+        itself (never asked, or no answer: a worker failed or stopped). Waits at most until Until, as Clear's
+        own clock would stop it there, and keeps the world's Cancel (PlanningCancelled) while it waits."""
+        Key = Self.Key(Path)
+        if Key not in Self.Asked:
+            return None
+        Entry = Self.Asked[Key]
+        if Entry is None:
+            return False
+        Future, Legs = Entry
+        Cancel = getattr(Self.World, "Cancel", None)
+        while not Future.done():
+            Left = Until - Time.monotonic()
+            if Left <= 0:
+                return False  # Interrupted, as Clear is at its deadline; nothing remembered.
+            if Cancel is not None and Cancel():
+                Self.Close()
+                raise PlanningCancelled("Route planning stopped: the arm was stopped (Stop, Hold, Coast or emergency stop) "
+                                        "or another motion started while it planned. No motion sent.")
+            try:
+                Future.result(timeout=min(Left, 0.02))
+            except TimeoutError:
+                continue
+            except Exception:
+                break
+        try:
+            Answer = Future.result(timeout=0)
+        except Exception:
+            Answer = None
+        if Answer is None or Answer[0] != "ok":
+            del Self.Asked[Key]
+            return None
+        Result = Answer[1]
+        if Result["interior"] is not None:
+            return False
+        for Index, Certified in Result["legs"]:
+            LegKey, Points = Legs[Index]
+            Self.Legs[LegKey] = Points if Certified else None
+        return all(Certified for _, Certified in Result["legs"])
+
+    def Close(Self):
+        """Drop every request not yet in a worker (one already there finishes, unread)."""
+        Self.Open = False
+        for Entry in Self.Asked.values():
+            if Entry is not None:
+                Entry[0].cancel()

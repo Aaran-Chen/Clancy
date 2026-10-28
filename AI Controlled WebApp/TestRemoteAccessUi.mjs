@@ -13,7 +13,7 @@
 // the live ports (5180/5181, 8000, 8001, 8002, 11434) to a closed port and every request to them is stubbed or refused.
 //   node TestRemoteAccessUi.mjs
 import { chromium as Chromium } from "playwright";
-import { LaunchOptions, StartUiServer } from "./UiTestLib.mjs";
+import { LaunchOptions, StartUiServer, BackendPython } from "./UiTestLib.mjs";
 import { execFileSync as Execute } from "node:child_process";
 import Fs from "node:fs";
 import Path from "node:path";
@@ -25,7 +25,7 @@ const Port = Server.Port;
 const LocalUrl = `http://127.0.0.1:${Port}/`, RemoteHost = "192.0.2.10", RemoteUrl = `http://${RemoteHost}:${Port}/`;
 const Password = "correct horse battery";
 const LivePorts = [8000, 8001, 8002, 11434];
-const Python = Fs.readFileSync(Path.join(Root, "../.backend-python.txt"), "utf8").replace(/^﻿/, "").trim();
+const Python = BackendPython();
 const BaseState = JSON.parse(Execute(Python, ["-c", "import json, bridge_server; print(json.dumps(bridge_server.BridgeController().state_snapshot()))"],
   { cwd: Backend, encoding: "utf8", env: { ...process.env, SO101_DEPTH_CAMERA: "0", SO101_RECORDER: "0" } }));
 Object.assign(BaseState, { arm_connected: false, torque: false, port: "", motion_fault: null, disconnected_on_purpose: null });

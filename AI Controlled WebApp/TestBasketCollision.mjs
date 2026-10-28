@@ -1,15 +1,14 @@
 import { build as Build } from "esbuild";
 import { chromium as Chromium } from "playwright";
-import { CadReadyMs, LaunchOptions, StartUiServer } from "./UiTestLib.mjs";
+import { CadReadyMs, LaunchOptions, StartUiServer, BackendPython } from "./UiTestLib.mjs";
 import { execFileSync as Execute } from "node:child_process";
-import { readFileSync as ReadFile } from "node:fs";
 import { createRequire as CreateRequire } from "node:module";
 import Path from "node:path";
 import { fileURLToPath as FilePath } from "node:url";
 import Assert from "node:assert/strict";
 
 const Root = Path.dirname(FilePath(import.meta.url)), Backend = Path.resolve(Root, "../back end");
-const Python = ReadFile(Path.join(Root, "../.backend-python.txt"), "utf8").trim();
+const Python = BackendPython();
 const Fixtures = JSON.parse(Execute(Python, ["-c", `
 import json, numpy as Np
 import bridge_server as Bridge, BasketCollision as Collision

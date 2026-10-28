@@ -12,6 +12,7 @@ import json
 import os
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
@@ -300,14 +301,85 @@ class SingleCallLocateTests(unittest.TestCase):
         Self.assertEqual(Fake.Prompts, [])
 
 
+class SlowOllama(FakeOllama):
+    """FakeOllama taking Takes seconds a call: a call given less time (its socket timeout) times out after that."""
+
+    def __init__(Self, Single, Takes, Query="[]"):
+        super().__init__(Single, Query)
+        Self.Takes, Self.Timeouts = Takes, []
+
+    def __call__(Self, Url, Payload=None, timeout=10):
+        Self.Timeouts.append(timeout)
+        time.sleep(min(timeout, Self.Takes))
+        if timeout < Self.Takes:
+            raise TimeoutError("timed out")
+        return super().__call__(Url, Payload, timeout)
+
+
+class LocateDeadlineTests(unittest.TestCase):
+    """One deadline for a whole /locate, its model calls and its depth work (audit 2 L10): the app stops waiting at
+    LocateTimeoutMs (lib/AiTaskLoop.ts), so a locate past it ends instead of keeping Ollama busy."""
+
+    def Rows(Self):
+        return [["can", *Grid(Tight(DeskCan))], ["eraser", *Grid(Tight(Eraser))]]
+
+    def TestTheDeadlineIsTheApps(Self):
+        App = (Path(__file__).resolve().parent.parent / "AI Controlled WebApp" / "src" / "lib" / "AiTaskLoop.ts").read_text(encoding="utf-8")
+        Self.assertIn(f"export const LocateTimeoutMs = {round(Locator.LOCATE_DEADLINE_S * 1000)};", App)
+
+    def TestASlowModelEndsTheLocateAtTheDeadline(Self):
+        Fake = SlowOllama(Single(Self.Rows(), 1), Takes=2.0)
+        Started = time.perf_counter()
+        with patch.object(Locator, "LOCATE_DEADLINE_S", 0.5, create=True):
+            Result, Records = Locate(Fake)
+        Self.assertLess(time.perf_counter() - Started, 1.5)
+        Self.assertLessEqual(Fake.Timeouts[0], 0.5)
+        Self.assertEqual((Result["ok"], Result.get("error_code")), (False, "locate_timeout"), Result)
+        Self.assertNotIn("scene", Result)
+        Self.assertEqual(Records[-1][0].get("error_code"), "locate_timeout")
+
+    def TestTheVotedCallsShareOneDeadline(Self):
+        Fake = SlowOllama(json.dumps([{"label": "can", "box": Grid(Tight(DeskCan))}]), Takes=0.3)
+        Fake.Single = "[]"
+        Started = time.perf_counter()
+        with patch.object(Locator, "LOCATE_DEADLINE_S", 0.5, create=True):
+            Result, _ = Locate(Fake, Mode="vlm")
+        Self.assertLess(time.perf_counter() - Started, 1.2)
+        # The first sample took 0.3 s of the 0.5: the second had what was left, and nothing was called after it.
+        Self.assertEqual(len(Fake.Timeouts), 2, Fake.Timeouts)
+        Self.assertLessEqual(Fake.Timeouts[1], 0.25, Fake.Timeouts)
+        Self.assertEqual((Result["ok"], Result.get("error_code")), (False, "locate_timeout"), Result)
+
+    def TestSlowDepthWorkEndsTheLocateToo(Self):
+        Fake = FakeOllama(Single(Self.Rows(), 1))
+        Measure = DG.MeasureBox
+
+        def Slow(*Arguments, **Keywords):
+            time.sleep(0.6)
+            return Measure(*Arguments, **Keywords)
+        with patch.object(Locator, "LOCATE_DEADLINE_S", 0.5, create=True), patch.object(Locator.DepthGeometry, "MeasureBox", side_effect=Slow) as Measured:
+            Result, _ = Locate(Fake)
+        Self.assertEqual(Measured.call_count, 1)
+        Self.assertEqual((Result["ok"], Result.get("error_code")), (False, "locate_timeout"), Result)
+        Self.assertNotIn("scene", Result)
+
+    def TestInTimeNothingChanges(Self):
+        Fake = SlowOllama(Single(Self.Rows(), 1), Takes=0.05)
+        Result, _ = Locate(Fake)
+        Self.assertTrue(Result["ok"], Result)
+        [Timeout] = Fake.Timeouts
+        Self.assertLessEqual(Timeout, Locator.LOCATE_TIMEOUT_S)
+        Self.assertGreater(Timeout, 50.0)
+
+
 def load_tests(Loader, Tests, Pattern):
     Prefixed = unittest.TestLoader()
     Prefixed.testMethodPrefix = "Test"
-    return unittest.TestSuite(Prefixed.loadTestsFromTestCase(Case) for Case in (ParseTests, MeasureBoxHookTests, SingleCallLocateTests))
+    return unittest.TestSuite(Prefixed.loadTestsFromTestCase(Case) for Case in (ParseTests, MeasureBoxHookTests, SingleCallLocateTests, LocateDeadlineTests))
 
 
 if __name__ == "__main__":
     Loader = unittest.TestLoader()
     Loader.testMethodPrefix = "Test"
-    Suite = unittest.TestSuite(Loader.loadTestsFromTestCase(Case) for Case in (ParseTests, MeasureBoxHookTests, SingleCallLocateTests))
+    Suite = unittest.TestSuite(Loader.loadTestsFromTestCase(Case) for Case in (ParseTests, MeasureBoxHookTests, SingleCallLocateTests, LocateDeadlineTests))
     raise SystemExit(not unittest.TextTestRunner(verbosity=2).run(Suite).wasSuccessful())

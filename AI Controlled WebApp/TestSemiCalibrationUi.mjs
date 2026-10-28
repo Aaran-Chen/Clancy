@@ -14,15 +14,15 @@
 //     servo reaching the heat limit; an old bridge without the click endpoints.
 // Run: node TestSemiCalibrationUi.mjs (it serves this checkout on 5191-5199 itself: UiTestLib.mjs)
 import { chromium as Chromium } from "playwright";
-import { LaunchOptions, StartUiServer } from "./UiTestLib.mjs";
-import { readFileSync as ReadFile, mkdirSync as MakeDirectory } from "node:fs";
+import { LaunchOptions, StartUiServer, BackendPython } from "./UiTestLib.mjs";
+import { mkdirSync as MakeDirectory } from "node:fs";
 import { execFileSync as Execute } from "node:child_process";
 import { fileURLToPath as FilePath } from "node:url";
 import Path from "node:path";
 import Assert from "node:assert/strict";
 
 const Root = Path.dirname(FilePath(import.meta.url)), Backend = Path.resolve(Root, "../back end");
-const Python = ReadFile(Path.join(Root, "../.backend-python.txt"), "utf8").replace(/^\uFEFF/, "").trim();
+const Python = BackendPython();
 const Snapshot = JSON.parse(Execute(Python, ["-c", "import json, bridge_server; print(json.dumps(bridge_server.BridgeController().state_snapshot()))"],
   { cwd: Backend, encoding: "utf8" }));
 const Server = await StartUiServer();

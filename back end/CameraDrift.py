@@ -69,8 +69,61 @@ from where the arm puts it. With the calibrated desk out of view (_CheckDesk) an
 path neither passing nor finding a moved camera, CheckCapture no longer requires the desk:
 the camera is assumed where it was calibrated and the gripper tape checks it through every
 joint, wrist roll included (within 0.75 cm verified, farther a moved camera, not judgeable
-an assumed pass with a warning). The desk path above is unchanged and decides whenever the
-calibrated desk is in view.
+an assumed pass with a warning), and the basket rim beside it (off past its limits, a moved
+camera too). The desk path above is unchanged and decides whenever the calibrated desk is in
+view and either matches or is explained by a cart move.
+
+A desk in view that disagrees (RobotReference, robot_mode "desk_differs")
+------------------------------------------------------------------------
+On 2026-10-25 at 22:15:25 the cart stood at the bookshelf cabinet again and "grab the pille bottle
+of the shelf" was refused, told to recalibrate: the plane found there met 201 of the calibrated desk's
+cells, 55% agreeing, 4.17 deg / 3.77 cm off it (more than a cart move), while the roll-aware gripper tape
+sat 0.58 cm from where the arm puts it. A disagreeing desk the cart-move path cannot explain is no proof
+the camera moved: CheckCapture hands it to the robot's two witnesses (_DeskDiffers), which must both agree,
+and a fully verified desk pass records the basket rim they compare with (RobotReference.RimRecordCandidate).
+
+The arm over the desk (ArmOcclusion)
+------------------------------------
+On 2026-10-22 at 14:59:01Z, mid-task ("grab the pill bottle", step 2), the arm was out over the
+desk and the capture was stopped as "the desk moved against the arm (was the cart moved?)"; it was
+not. On the visible desk the change read 0.10 deg / -0.05 cm, but only 63.6% of it agreed
+(MinAgreeingShare 67%): a binder's sheets and the keyboard (0.45 cm thick) covered about a third of
+the desk seen, and the arm hid 216 of the calibrated desk's cells, 405 with the edge around it, that
+at Home it hides none of (14:54-14:57: 72-77% agreeing). A share below the floor read as a moved desk,
+the gripper tape was asked to tell a moved cart from a moved camera, and the roll rule refused it (wrist
+roll 59 steps from the calibration's, as it always is mid-task). So the cells the arm covers in this
+capture (its link boxes where it stood, as the measured scene leaves it out, and ArmOcclusionMarginPx
+around them) stay out of the fit (DeskChange, desk_occluded_cells). Desk still seen there (48 of the
+189 edge cells at 14:59) is judged by the fit like the rest; only what is not seen as desk there is
+hidden (desk_hidden_cells, 357). When the desk then reads no change past the block limits, at least
+MinOccludedAgreeingShare of the desk in view agrees on its own (the fit is still the desk's, and the arm
+may explain no more than about half as much again), and its share is under the floor only by what the
+arm hides (had those cells agreed it would clear it), the desk passes as matching where it is visible
+(desk_occluded). That credit needs the fit to be the desk's, though: a flat item over most of the desk in
+view wins the median fit, and after a real 0.6-0.9 cm move away its top can sit at the old desk height, the bare
+desk then disagreeing beneath it. Items lie on the desk, never under it, so no more than MaxOccludedBeneathShare of
+the desk in view may lie beneath the fit (still cameras 0.07-0.11, those moves 0.33-0.45), and the change it reads
+must be within MaxOccludedNormalChangeDeg / MaxOccludedOffsetChangeCm, half the block limits. The tape then checks the
+camera as on any desk pass, roll-aware when the wrist roll is not the calibration's. A change past the
+limits on the visible desk is judged as before, and a desk that disagrees without the arm explaining it
+is still the cart-move path below. Nor does the exclusion ever make a desk in view absent (which would hand
+the capture to the robot, whose tape only assumes with the jaw off the calibration's): when it leaves fewer
+than MinMapCells to fit but the desk seen has them, all of it is fitted, as without the arm, and none of it
+counts as hidden. There, too, the tape is roll-aware when the roll differs
+(_RollAwareTape): a mid-task roll no longer refuses it on its own.
+
+Items on the mat dilute that beneath share, though: with the camera 0.6-0.7 cm farther, a mat at the old desk height and
+a notebook 0.3-0.7 cm proud of it, the item's cells are neither agreeing nor beneath, the bare desk is only 15-21% of the
+desk in view, and the fit (-0.05 cm) passed. So an occluded desk is also judged against the session's latest clear view
+of the desk (SessionChange): every capture that passes on the desk path's own terms (not desk_occluded, not re-measured)
+is remembered (RememberSessionFrame, one per calibration, the arm's cells kept out), and within SessionFrameMaxAgeS every
+calibrated desk cell seen in both, item, mat or bare desk alike, is compared cell for cell. A camera or cart move shifts
+all that stood still by the move; a mat or item already there does not change. When at least MinSessionAgreeingShare of
+them agree on one change, within the occluded limits the desk is still (it passes), past them it moved (it blocks). With
+no such view, or one where too little agrees (the scene, not the camera, changed: 14:59 against 14:57 on 2026-10-22,
+Aaran having leaned over the keyboard, still agrees 0.65), the bare desk is judged against what could be desk, the cells
+agreeing or beneath the fit (items stand above it, neither): at most MaxOccludedBeneathOfDeskShare (14:59: 0.12; the clutter
+scenes 0.19-0.25; bare mats 0.38 and up). None of this touches a desk passing on its own terms.
 """
 
 from __future__ import annotations
@@ -79,6 +132,7 @@ import base64
 import hashlib
 import json
 import math
+import threading
 import time
 import zlib
 from pathlib import Path
@@ -120,6 +174,31 @@ MinMapCells = 200
 # (still camera on 2026-09-28: 98.6% or more; 2026-09-29: 76-86%). Below it an item covers so
 # much of the desk that it could pass for the desk itself, and the check fails closed.
 MinAgreeingShare = 0.67
+# Where the arm hides part of the desk (desk_occluded, the module notes), the desk in view must still agree this much
+# on its own: the median fit holds only while a clear majority of the cells it sees is desk that agrees, and with the
+# floor above it caps what the arm may hide at about half the desk in view.
+MinOccludedAgreeingShare = 0.55
+# Nor may more than this share of the desk in view lie beneath the fit (farther from the camera by more than MapBandCm).
+# Items sit on the desk, so a fit with the bare desk below it is an item's top, not the desk: a flat item over most of
+# the visible desk wins the median fit, and after a real 0.6-0.9 cm move away its top can sit at the old desk height
+# (0.33-0.41 of the desk in view then beneath it). Still cameras: 0.07-0.11 on 2026-10-03/04 (the desk's own far
+# patch, about 1 cm low against the map), 0.087 at 14:59 on 2026-10-22; real desk changes there 0.28-0.43.
+MaxOccludedBeneathShare = 0.2
+# And an occluded desk passes only well within the block limits: its fit stands on fewer cells than a desk pass.
+MaxOccludedNormalChangeDeg = 0.25
+MaxOccludedOffsetChangeCm = 0.25
+# The session's latest clear view of the desk (RememberSessionFrame: a capture that passed on the desk path's own terms)
+# decides an occluded desk when it is this recent (s) and at least MinSessionAgreeingShare of the desk cells seen in both
+# agree on one change (SessionChange): within the occluded limits it is still, past them it moved. 2026-10-22: 14:59:01
+# against 14:57:01 (the arm at Home, Aaran leaning over the keyboard then): 0.65 of 2.7k cells, 0.0 cm.
+SessionFrameMaxAgeS = 900.0
+MinSessionAgreeingShare = 0.5
+# With no such view (or an inconclusive one), the bare desk beneath the fit is judged against the cells that could be
+# desk, those agreeing or beneath it (items stand above it, neither): at most this share. 14:59 on 2026-10-22: 0.12; the
+# camera 0.6-0.7 cm farther with a mat at the old desk height and a notebook 0.3-0.7 cm on it: 0.19-0.25 (TestOccludedDesk's
+# ClutterOnMatTests); 0.6-0.9 cm moves under a bare mat: 0.38 and up. The margin is thin either side: the clear view decides
+# first wherever the session has one.
+MaxOccludedBeneathOfDeskShare = 0.16
 # Below that share the fitted change is not trusted: 0.4-0.8 cm mats over 30-50% of the desk read
 # up to 2.4 deg and 1.6 cm there (replays of the 2026-09-28 and 2026-09-29 frames), while real
 # turns fell below it only from 6 deg (the 2026-09-28 droops: 7-13 deg at shares 0.48-0.66).
@@ -167,6 +246,9 @@ CartShiftMaxCm = 3.0
 # turn of the real 21:46 frame passed by 0.03 cm (1.03 cm: the turn and the tape's 0.43 cm standing
 # offset partly cancel); here it blocks with 0.28 cm to spare, as does a 1 deg droop (0.82-0.83 cm).
 CartTapeMaxErrorCm = 0.75
+# Arm occlusion (ArmOcclusion, the module notes): the desk-map cells whose depth lies on the arm, grown this far in the
+# image for the ragged depth around its edges (two cells: about 1.3 cm on the desk at 50 cm).
+ArmOcclusionMarginPx = 16
 # Desks a re-measure replaced, newest first, kept in the baseline (each map is about 4 KB).
 DeskHistoryLength = 3
 # The re-measured baseline rides on the CheckCapture result under this key until the caller takes it.
@@ -325,11 +407,41 @@ def DeskMap(Reference: dict[str, Any]) -> np.ndarray | None:
     return np.where(Units == MapMissing, np.nan, Units * float(Stored["unit_cm"]))
 
 
+def ArmOcclusion(DepthMm: np.ndarray, Intrinsics: dict[str, Any], Model: dict[str, Any] | None,
+                 Arm: dict[str, Any] | None, Step: int = MapStep) -> np.ndarray | None:
+    """The cells (every Step-th pixel, as GridPoints) the arm covers in this capture: those whose depth point lies on
+    the arm where it stood for it (CaptureArmPose "link_boxes" grown SceneGeometry.ArmMarginCm, as the measured scene
+    leaves the arm out; without boxes, DepthGeometry.ArmExclusion about its joints), grown ArmOcclusionMarginPx in the
+    image. None without a trusted arm pose for the capture."""
+    if not Arm or not Arm.get("ok") or not Model:
+        return None
+    Boxes = [Box for Box in Arm.get("link_boxes") or [] if not Box.get("fixed")]  # the collar's revolution is no occupancy
+    if not Boxes and not Arm.get("joints"):
+        return None
+    import SceneGeometry  # local import: only the bridge's capture check needs it
+
+    Points = GridPoints(DepthMm, Intrinsics, Step)
+    Seen = np.isfinite(Points).all(axis=-1)
+    On = np.zeros(Points.shape[:2], dtype=bool)
+    if Seen.any():
+        Display = DepthGeometry.CameraToDisplay(Points[Seen], Model)
+        On[Seen] = SceneGeometry.ArmPoints(Display, Boxes) if Boxes else DepthGeometry.ArmExclusion(Arm["joints"])(Display)
+    Grow = int(math.ceil(ArmOcclusionMarginPx / Step))
+    if Grow and On.any():
+        On = cv2.dilate(On.astype(np.uint8), np.ones((2 * Grow + 1, 2 * Grow + 1), np.uint8)).astype(bool)
+    return On
+
+
 def DeskChange(DepthMm: np.ndarray, Intrinsics: dict[str, Any], Reference: dict[str, Any],
-               Plane: dict[str, Any]) -> dict[str, Any] | None:
+               Plane: dict[str, Any], Occluded: np.ndarray | None = None) -> dict[str, Any] | None:
     """How the desk moved against the calibration's, from the calibrated desk cells still seen
-    as desk: {"angle_deg", "offset_cm" (positive: the camera is farther), "cells", "agreeing_cells"},
-    or None when too little of it is visible."""
+    as desk: {"angle_deg", "offset_cm" (positive: the camera is farther), "cells", "agreeing_cells",
+    "beneath_cells" (those farther from the camera than the fit by more than MapBandCm), "occluded_cells",
+    "hidden_cells"}, or None when too little of it is visible. Occluded (ArmOcclusion,
+    on the map's grid) are cells about the arm: they stay out of the fit, desk still seen there is
+    judged by it like any other (cells, agreeing_cells); occluded_cells is how many calibrated desk
+    cells they cover, hidden_cells how many of those are not seen as desk (on the arm, its ragged edge
+    or its shadow)."""
     Map = DeskMap(Reference)
     if Map is None:
         return None
@@ -340,13 +452,46 @@ def DeskChange(DepthMm: np.ndarray, Intrinsics: dict[str, Any], Reference: dict[
     with np.errstate(invalid="ignore"):
         Desk = np.abs(Points @ np.asarray(Plane["n"]) - float(Plane["d"])) <= InlierCm
     Cells = Desk & np.isfinite(Map)
-    if int(Cells.sum()) < MinMapCells:
+    Fit, Covered, Hidden = Cells, 0, 0
+    if Occluded is not None and Occluded.shape == Map.shape:
+        # Only the calibrated desk not seen as desk there is hidden: the margin's visible desk still counts either way.
+        Covered, Hidden = int((Occluded & np.isfinite(Map)).sum()), int((Occluded & np.isfinite(Map) & ~Desk).sum())
+        Fit = Cells & ~Occluded
+        if int(Fit.sum()) < MinMapCells <= int(Cells.sum()):
+            # The arm's exclusion never turns a desk in view into an absent one (which CheckCapture hands to the robot,
+            # whose tape can only assume with the jaw off the calibration's): the desk seen decides, all of it, uncredited.
+            Fit, Covered, Hidden = Cells, 0, 0
+    if int(Fit.sum()) < MinMapCells:
         return None
-    Seen = Points[Cells]
-    Rise = Seen @ Normal - Offset - Map[Cells]
+    Seen = Points[Fit]
+    Rise = Seen @ Normal - Offset - Map[Fit]
     # The change as a plane over the baseline's own axes: rise = a E1.p + b E2.p + k.
     First = _Unit(np.cross(Normal, [1.0, 0.0, 0.0]))
     Design = np.column_stack([Seen @ First, Seen @ np.cross(Normal, First), np.ones(len(Seen))])
+    Solution = _RobustChange(Design, Rise)
+    Residual = Rise - Design @ Solution  # positive: above the fitted desk, toward the camera (the normal faces it)
+    Shown = Cells & ~Fit
+    if Shown.any():  # desk seen about the arm, judged by the fit made without it
+        Near = Points[Shown]
+        NearDesign = np.column_stack([Near @ First, Near @ np.cross(Normal, First), np.ones(len(Near))])
+        Residual = np.concatenate([Residual, (Near @ Normal - Offset - Map[Shown]) - NearDesign @ Solution])
+    Agreeing = int((np.abs(Residual) <= MapBandCm).sum())
+    Beneath = int((Residual < -MapBandCm).sum())
+    Angle, Shift, Turned = _ChangeOf(Solution, Normal, Offset, First)
+    return {"angle_deg": Angle, "offset_cm": Shift,
+            "cells": int(Cells.sum()), "agreeing_cells": Agreeing, "beneath_cells": Beneath,
+            "occluded_cells": Covered, "hidden_cells": Hidden, "normal": _Unit(Turned).tolist()}
+
+
+def _ChangeOf(Solution: np.ndarray, Normal: np.ndarray, Offset: float, First: np.ndarray) -> tuple[float, float, np.ndarray]:
+    """A fitted change plane (rise = a E1.p + b E2.p + k) as the turn it reads (deg), the offset (cm, positive: the
+    camera farther) and the turned normal."""
+    Turned = Normal - Solution[0] * First - Solution[1] * np.cross(Normal, First)
+    return AngleDeg(Turned, Normal), Offset - (Offset + float(Solution[2])) / float(np.linalg.norm(Turned)), Turned
+
+
+def _RobustChange(Design: np.ndarray, Rise: np.ndarray) -> np.ndarray:
+    """The change plane most of the cells agree on (DeskChange's fit; SessionChange uses it too)."""
     # Hypotheses ("nothing moved", and planes through random cell triples) are judged by the
     # median of their residuals, not by a vote within a band: a mat is a separate step, and a
     # vote joins it to the desk with a ramp (0.5-1 deg on a still camera). Nor is the start a fit
@@ -354,7 +499,7 @@ def DeskChange(DepthMm: np.ndarray, Intrinsics: dict[str, Any], Reference: dict[
     # fit flattened a 1 deg turn to 0.33. The median holds only while most cells seen are desk
     # that agrees: with 14-24% of a still camera's cells already off (2026-09-29), a mat over 30-45%
     # of the desk can win it with a ramp. CheckDesk's agreeing-share floor then fails closed.
-    Picks = np.random.default_rng(0).integers(0, len(Seen), size=(MapHypotheses, 3))
+    Picks = np.random.default_rng(0).integers(0, len(Rise), size=(MapHypotheses, 3))
     Triples = Design[Picks]
     Good = np.abs(np.linalg.det(Triples)) > 1e-6
     Solutions = np.vstack([np.zeros((1, 3)), np.linalg.solve(Triples[Good], Rise[Picks][Good][..., None])[..., 0]])
@@ -370,10 +515,87 @@ def DeskChange(DepthMm: np.ndarray, Intrinsics: dict[str, Any], Reference: dict[
         if int((Root > 0).sum()) < MinMapCells // 2:
             break
         Solution = np.linalg.lstsq(Design * Root[:, None], Rise * Root, rcond=None)[0]
-    Agreeing = int((np.abs(Design @ Solution - Rise) <= MapBandCm).sum())
-    Turned = Normal - Solution[0] * First - Solution[1] * np.cross(Normal, First)
-    return {"angle_deg": AngleDeg(Turned, Normal), "offset_cm": Offset - (Offset + float(Solution[2])) / float(np.linalg.norm(Turned)),
-            "cells": int(Cells.sum()), "agreeing_cells": Agreeing, "normal": _Unit(Turned).tolist()}
+    return Solution
+
+
+# --------------------------------------------------------------------------
+# The session's last clear view of the desk (desk_occluded; the module notes)
+# --------------------------------------------------------------------------
+_SessionFrames: dict[str, dict[str, Any]] = {}
+_SessionLock = threading.Lock()
+
+
+def ForgetSessionFrames() -> None:
+    """Drop every remembered clear view (tests; a bridge restart does the same)."""
+    with _SessionLock:
+        _SessionFrames.clear()
+
+
+def _DeskHeights(DepthMm: np.ndarray, Intrinsics: dict[str, Any], Reference: dict[str, Any]) -> np.ndarray:
+    """Each grid cell's height over the calibrated desk plane (cm, along desk_n; NaN where depth has none)."""
+    Points = GridPoints(DepthMm, Intrinsics, int(Reference["desk_map"]["step"]))
+    with np.errstate(invalid="ignore"):
+        return Points @ np.asarray(Reference["desk_n"], dtype=np.float64) - float(Reference["desk_d"])
+
+
+def RememberSessionFrame(DepthMm: np.ndarray, Intrinsics: dict[str, Any], Model: dict[str, Any], Arm: dict[str, Any] | None) -> bool:
+    """Keep this capture as the session's latest clear view of the desk: called for a capture that passed on the desk
+    path's own terms (not desk_occluded, not re-measured), its arm's cells kept out. Whether it was kept."""
+    Reference, _ = VerifiedReference(Model)
+    if Reference is None or DepthMm is None or Intrinsics is None:
+        return False
+    Map = DeskMap(Reference)
+    Heights = _DeskHeights(DepthMm, Intrinsics, Reference)
+    if Map is None or Heights.shape != Map.shape:
+        return False
+    Occluded = ArmOcclusion(DepthMm, Intrinsics, Model, Arm, int(Reference["desk_map"]["step"]))
+    Frame = {"at": time.monotonic(), "heights": Heights.astype(np.float32),
+             "occluded": Occluded if Occluded is not None and Occluded.shape == Map.shape else np.zeros(Map.shape, bool)}
+    with _SessionLock:
+        _SessionFrames.pop(Reference["sha256"], None)
+        _SessionFrames[Reference["sha256"]] = Frame
+        while len(_SessionFrames) > 4:  # one per calibration; a re-measure starts a new one
+            _SessionFrames.pop(next(iter(_SessionFrames)))
+    return True
+
+
+def SessionChange(DepthMm: np.ndarray, Intrinsics: dict[str, Any], Reference: dict[str, Any],
+                  Occluded: np.ndarray | None) -> dict[str, Any]:
+    """How the calibrated desk's cells moved since the session's latest clear view (RememberSessionFrame), cell for cell:
+    {"session_check": "none" (no clear view within SessionFrameMaxAgeS), "inconclusive" (too few cells seen in both, or
+    under MinSessionAgreeingShare of them agreeing on one change: the scene, not the camera, changed), "still" or
+    "moved" (the change most of them agree on within MaxOccludedNormalChangeDeg / MaxOccludedOffsetChangeCm, or past
+    them), "age_s", "cells", "agreeing_share", "angle_deg", "offset_cm"}. Every cell on the desk, item, mat or bare desk,
+    counts: a camera or cart move shifts all that stood still by the move, while what was already there does not
+    change; the arm's cells in either capture count neither way."""
+    with _SessionLock:
+        Frame = _SessionFrames.get(Reference.get("sha256"))
+    Age = None if Frame is None else time.monotonic() - Frame["at"]
+    Map = DeskMap(Reference)
+    if Frame is None or Age > SessionFrameMaxAgeS or Map is None or Frame["heights"].shape != Map.shape:
+        return {"session_check": "none"}
+    Points = GridPoints(DepthMm, Intrinsics, int(Reference["desk_map"]["step"]))
+    if Points.shape[:2] != Map.shape:
+        return {"session_check": "none"}
+    Normal, Offset = np.asarray(Reference["desk_n"], dtype=np.float64), float(Reference["desk_d"])
+    with np.errstate(invalid="ignore"):
+        Rise = Points @ Normal - Offset - Frame["heights"]
+    Both = np.isfinite(Map) & np.isfinite(Rise) & ~Frame["occluded"]
+    if Occluded is not None and Occluded.shape == Map.shape:
+        Both &= ~Occluded
+    Result: dict[str, Any] = {"session_check": "inconclusive", "age_s": round(Age, 1), "cells": int(Both.sum())}
+    if Result["cells"] < MinMapCells:
+        return Result
+    Seen, Rise = Points[Both], Rise[Both]
+    First = _Unit(np.cross(Normal, [1.0, 0.0, 0.0]))
+    Design = np.column_stack([Seen @ First, Seen @ np.cross(Normal, First), np.ones(len(Seen))])
+    Solution = _RobustChange(Design, Rise)
+    Share = float((np.abs(Rise - Design @ Solution) <= MapBandCm).mean())
+    Angle, Shift, _ = _ChangeOf(Solution, Normal, Offset, First)
+    Result.update(agreeing_share=round(Share, 3), angle_deg=round(Angle, 3), offset_cm=round(Shift, 3))
+    if Share >= MinSessionAgreeingShare:
+        Result["session_check"] = "moved" if Angle > MaxOccludedNormalChangeDeg or abs(Shift) > MaxOccludedOffsetChangeCm else "still"
+    return Result
 
 
 # --------------------------------------------------------------------------
@@ -652,22 +874,25 @@ def _Clock(FittedAt: Any) -> str:
 
 
 def CheckDesk(DepthMm: np.ndarray | None, Intrinsics: dict[str, Any] | None, Model: dict[str, Any] | None,
-              Seq: int | None = None) -> dict[str, Any]:
+              Seq: int | None = None, Arm: dict[str, Any] | None = None) -> dict[str, Any]:
     """Compare the desk in this depth frame with the calibration's baseline.
 
     Returns the camera_check contract: {"ok", "angle_deg", "offset_cm", "reason",
     "reference_fitted_at", "seq"} plus "error_code" and "error" (one plain sentence)
-    when blocked: camera_not_verified, camera_check_failed or camera_moved.
+    when blocked: camera_not_verified, camera_check_failed or camera_moved. Arm, the
+    capture's CaptureArmPose, leaves the cells the arm covers out (ArmOcclusion).
     """
-    return _CheckDesk(DepthMm, Intrinsics, Model, Seq)[0]
+    return _CheckDesk(DepthMm, Intrinsics, Model, Seq, Arm)[0]
 
 
-def _CheckDesk(DepthMm, Intrinsics, Model, Seq) -> tuple[dict[str, Any], dict[str, Any] | None, bool, bool]:
+def _CheckDesk(DepthMm, Intrinsics, Model, Seq, Arm=None) -> tuple[dict[str, Any], dict[str, Any] | None, bool, bool]:
     """CheckDesk's result, the desk plane found in this frame, whether the check failed only
     because that desk disagrees with the baseline (what a cart rolled against the desk does too):
     the plane is off the calibrated cells, too little of the desk agrees, or it turned or shifted;
     and whether the calibrated desk is out of view: no desk plane near it, or fewer than
-    MinMapCells of its cells seen as desk (CheckCapture then asks the robot)."""
+    MinMapCells of its cells seen as desk (CheckCapture then asks the robot). With Arm, the cells it
+    covers count neither way, and a desk agreeing too little only by what the arm hides passes as
+    matching where it is visible (desk_occluded; the module notes)."""
     Started = time.perf_counter()
     Reference, Why = VerifiedReference(Model)
     Result: dict[str, Any] = {"ok": False, "angle_deg": None, "offset_cm": None, "reason": "",
@@ -695,7 +920,8 @@ def _CheckDesk(DepthMm, Intrinsics, Model, Seq) -> tuple[dict[str, Any], dict[st
                        "The camera position could not be checked: the desk is not visible in depth. "
                        "Clear the view of the desk, or lock the camera head and recalibrate.", Absent=True)
     PlaneAngle = round(AngleDeg(Plane["n"], Reference["desk_n"]), 3)
-    Change = DeskChange(DepthMm, Intrinsics, Reference, Plane)
+    Occluded = ArmOcclusion(DepthMm, Intrinsics, Model, Arm, int(Reference["desk_map"]["step"]))
+    Change = DeskChange(DepthMm, Intrinsics, Reference, Plane, Occluded)
     if Change is None:
         Result["plane_angle_deg"] = PlaneAngle
         return Blocked("camera_check_failed", f"fewer than {MinMapCells} cells of the calibrated desk are visible as desk",
@@ -706,13 +932,54 @@ def _CheckDesk(DepthMm, Intrinsics, Model, Seq) -> tuple[dict[str, Any], dict[st
     Share = Change["agreeing_cells"] / Change["cells"]
     Result.update(angle_deg=round(Angle, 3), offset_cm=round(Offset, 3), desk_inlier_fraction=Plane["inlier_fraction"],
                   desk_cells=Change["cells"], desk_agreeing_share=round(Share, 3), plane_angle_deg=PlaneAngle)
+    Hidden = int(Change.get("hidden_cells") or 0)
+    if Change.get("occluded_cells"):  # only where the arm covers some of the calibrated desk: elsewhere the result is as it always was
+        Result.update(desk_occluded_cells=int(Change["occluded_cells"]), desk_hidden_cells=Hidden)
     Moved = Angle > MaxNormalChangeDeg or abs(Offset) > MaxOffsetChangeCm
     # Too little agreement: the fit may be a thin item's ramp or height, so only a turn beyond
     # what one fakes is reported as a moved camera (below).
     if Share < MinAgreeingShare and Angle <= ThinItemMaxDeg:
+        # The arm out over the desk hides enough of it that the share is under the floor only by what it hides:
+        # had those cells agreed it would clear it. The visible desk, still mostly agreeing (MinOccludedAgreeingShare),
+        # reads no change past the limits: it matches.
+        Unhidden = (Change["agreeing_cells"] + Hidden) / (Change["cells"] + Hidden) if Hidden else 0.0
+        Why = ""
+        if not Moved and Share >= MinOccludedAgreeingShare and Unhidden >= MinAgreeingShare:
+            # Only if the fit is the desk's (none of the bare desk beneath it: an item's top won it) and reads no change
+            # near the limits.
+            Under = int(Change.get("beneath_cells") or 0)
+            Beneath = Under / Change["cells"]
+            OfDesk = Under / max(Under + Change["agreeing_cells"], 1)
+            Session = SessionChange(DepthMm, Intrinsics, Reference, Occluded)
+            Result.update(desk_beneath_share=round(Beneath, 3), desk_beneath_of_desk_share=round(OfDesk, 3),
+                          desk_session=Session)
+            if Beneath > MaxOccludedBeneathShare:
+                Why = (f"; {Beneath:.0%} of the desk in view lies beneath the fit (at most {MaxOccludedBeneathShare:.0%} where the arm "
+                       f"hides some of it): an item's top, not the desk, may have won it")
+            elif Angle > MaxOccludedNormalChangeDeg or abs(Offset) > MaxOccludedOffsetChangeCm:
+                Why = (f"; the {Angle:.2f} deg / {Offset:+.2f} cm it reads is past what a desk the arm hides may read "
+                       f"({MaxOccludedNormalChangeDeg} deg / {MaxOccludedOffsetChangeCm} cm)")
+            elif Session["session_check"] == "moved":
+                Why = (f"; against the clear view of the desk {Session['age_s']:.0f} s before, what is in view moved "
+                       f"{Session['angle_deg']:.2f} deg / {Session['offset_cm']:+.2f} cm ({Session['agreeing_share']:.0%} of "
+                       f"{Session['cells']} cells agreeing)")
+            elif OfDesk > MaxOccludedBeneathOfDeskShare:
+                # The clear view only ever adds a block, never waives this one: a clear view taken before a mat was laid
+                # reads "still" when the mat's thickness cancels a real move (review round 5).
+                Why = (f"; {OfDesk:.0%} of what could be desk lies beneath the fit "
+                       f"(at most {MaxOccludedBeneathOfDeskShare:.0%}): an item's top, not the desk, may have won it")
+            else:
+                Result.update(ok=True, desk_occluded=True, desk_agreeing_share_unhidden=round(Unhidden, 3),
+                              reason=f"desk matches the calibration where the arm leaves it in view ({Angle:.2f} deg / {Offset:+.2f} cm); "
+                                     f"{Share:.0%} of the visible desk agrees (need {MinAgreeingShare:.0%}), {Unhidden:.0%} had the "
+                                     f"{Hidden} cells the arm hides agreed"
+                                     + (f"; unmoved since the clear view {Session['age_s']:.0f} s before" if Session["session_check"] == "still" else ""),
+                              check_ms=round((time.perf_counter() - Started) * 1000, 1))
+                return Result, Plane, False, False
         return Blocked("camera_check_failed",
                        f"only {Share:.0%} of the calibrated desk in view agrees with one camera pose (need {MinAgreeingShare:.0%})"
-                       + (f"; the {Angle:.2f} deg / {Offset:+.2f} cm it reads is within what an item on the desk can fake" if Moved else ""),
+                       + (f"; the {Angle:.2f} deg / {Offset:+.2f} cm it reads is within what an item on the desk can fake" if Moved else "")
+                       + Why,
                        "The camera position could not be checked: much of the desk looks different from calibration. "
                        "Clear the desk, or lock the camera head and recalibrate.", Changed=True)
     if Moved:
@@ -840,32 +1107,94 @@ def CheckCapture(DepthMm, Intrinsics, Model, Seq=None, ImageBgr=None, Arm=None) 
     (RobotReference.Check: alignment_source "robot", robot_check "verified", "assumed" or "moved"; the
     desk path's own result under "desk_check"). Otherwise the robot's reading rides beside the desk
     path's result under RobotReference.ShadowKey, logged and never deciding.
+
+    A desk in view that disagrees with the calibration's and that the cart-move path could not explain
+    (_DeskDiffers: the gripper tape agreeing, but the desk beyond a cart's tilt or shift, or too little of it
+    to re-measure, or the tape unable to judge) is no proof the camera moved either: the cart may stand at a
+    shelf, or anywhere else (2026-10-25 22:15:25). The robot's two witnesses decide it (RobotReference.Check,
+    DeskDiffers: robot_mode "desk_differs"), with nothing assumed: both within their limits verify the camera
+    (the old desk is then no support: the capture is measured as with no desk in view), either off past them
+    is camera_moved, and the rim unable to judge blocks with what lets it judge. Where the tape cannot judge
+    either, the desk path's own block stands, the robot's reading beside it.
+
+    A desk pass that verifies the camera in full (the desk on its own terms and the roll-aware tape within
+    RobotReference.RimRecordTapeMaxCm) carries its basket rim under RobotReference.RimRecordKey: /locate saves
+    it (RobotReference.RecordRim), so the rim can judge later captures without the calibration's own frames.
     """
     import RobotReference  # local import: RobotReference imports this module
 
     Result, Absent = _DeskCapture(DepthMm, Intrinsics, Model, Seq, ImageBgr, Arm)
+    if not Result["ok"] and not Absent and _DeskDiffers(Result) and DepthMm is not None and Intrinsics is not None:
+        Robot = RobotReference.Check(ImageBgr, DepthMm, Intrinsics, Model, Arm, Seq, DeskCheck=Result, Mode=RobotReference.DeskDiffers)
+        if Robot["ok"] or Robot.get("error_code") == "camera_moved" or Robot.get("tape_check") == "ok":
+            return Robot
+        return RobotReference.WithShadow(Result, ImageBgr, DepthMm, Intrinsics, Model, Arm, Seq,
+                                         Reading={Key: Value for Key, Value in Robot.items() if Key != "desk_check"})
     if Result["ok"] or Result.get("error_code") == "camera_moved" or not Absent:
-        return RobotReference.WithShadow(Result, ImageBgr, DepthMm, Intrinsics, Model, Arm)
+        return RobotReference.WithShadow(Result, ImageBgr, DepthMm, Intrinsics, Model, Arm, Seq)
     return RobotReference.Check(ImageBgr, DepthMm, Intrinsics, Model, Arm, Seq, DeskCheck=Result)
+
+
+def _DeskDiffers(Result: dict[str, Any]) -> bool:
+    """A desk-path block the robot may decide instead (CheckCapture): the desk disagreed with its baseline and went to
+    the cart-move path (desk_change), and the gripper tape did not say the camera moved. That is the cart-move path's
+    camera_check_failed (beyond a cart's tilt or shift, or not re-measurable) and desk_changed_unverified, and the desk's
+    own camera_moved beyond a cart's tilt or shift (_DeskChanged keeps the desk's code there) with the tape within
+    CartTapeMaxErrorCm. A camera_moved from the tape, from a desk within a cart's reach, or any desk block that did not
+    disagree (no calibration, no depth) is never handed over."""
+    Change = Result.get("desk_change")
+    if not Change or Result.get("tape_check") == "moved":
+        return False
+    Code = Result.get("error_code")
+    if Code in ("camera_check_failed", "desk_changed_unverified"):
+        return True
+    Beyond = float(Change.get("plane_angle_deg") or 0.0) > CartTiltMaxDeg or abs(float(Change.get("plane_offset_cm") or 0.0)) > CartShiftMaxCm
+    return Code == "camera_moved" and Beyond and Result.get("tape_check") == "ok"
 
 
 def _DeskCapture(DepthMm, Intrinsics, Model, Seq, ImageBgr, Arm) -> tuple[dict[str, Any], bool]:
     """CheckCapture's desk path (the desk, then the roll-gated tape and the cart move, as at 8f4d27a):
     its result, and whether the calibrated desk was out of view (_CheckDesk)."""
-    Result, Plane, Changed, Absent = _CheckDesk(DepthMm, Intrinsics, Model, Seq)
+    Result, Plane, Changed, Absent = _CheckDesk(DepthMm, Intrinsics, Model, Seq, Arm)
     # Without a tape offset nothing can tell a moved cart from a moved camera: the desk's block stands.
     Changed = Changed and len((Model or {}).get("marker_corners_gripper_cm") or []) == 1
     if not Result["ok"] and not Changed:
         return Result, Absent
     Started = time.perf_counter()
     Tape = TapeCheck(ImageBgr, DepthMm, Intrinsics, Model, Arm, Desk=Plane if Changed else None)
+    # Roll-aware where the desk is in view and the tape decides: with the desk out of view RobotReference.Check does.
+    if (Changed and not Absent) or Result.get("desk_occluded"):
+        Tape = _RollAwareTape(Tape, ImageBgr, DepthMm, Intrinsics, Model, Arm)
     Tape["tape_ms"] = round((time.perf_counter() - Started) * 1000, 1)
     if Changed:
         return _DeskChanged(Result, Plane, Tape, DepthMm, Intrinsics, Model, Seq), Absent
     Result.update(Tape)
     if Result["tape_check"] == "moved":
         Result.update(ok=False, error_code="camera_moved", **_TapeMovedText(Result, Model))
+    elif not Result.get("desk_occluded"):
+        # A desk that passed on its own terms is the session's latest clear view (an occluded desk is judged against it).
+        RememberSessionFrame(DepthMm, Intrinsics, Model, Arm)
     return Result, Absent
+
+
+def _RollAwareTape(Tape: dict[str, Any], ImageBgr, DepthMm, Intrinsics, Model, Arm) -> dict[str, Any]:
+    """TapeCheck's result, or where it stopped only because the wrist roll is not the calibration's (as it never is
+    mid-task), the roll-aware tape (RobotReference.TapeCheck, through every joint) in its place, judged against
+    TapeMaxErrorCm as on a desk pass (_DeskChanged applies CartTapeMaxErrorCm itself). Kept as it was when the
+    roll-aware check has no gripper frame for this capture or fails."""
+    if Tape.get("tape_check") != "pose_differs" or not str(Tape.get("tape_reason") or "").startswith("wrist_roll"):
+        return Tape
+    import RobotReference  # local import: RobotReference imports this module
+
+    try:
+        Aware = RobotReference.TapeCheck(ImageBgr, DepthMm, Intrinsics, Model, Arm)
+    except Exception as Exc:  # the roll-gated result stands
+        return {**Tape, "tape_roll_aware_reason": f"{type(Exc).__name__}: {Exc}"}
+    if Aware.get("tape_check") == "unavailable":
+        return {**Tape, "tape_roll_aware_reason": Aware.get("tape_reason")}
+    if Aware.get("tape_check") in ("ok", "moved"):
+        Aware = {**Aware, "tape_check": "moved" if Aware["tape_error_cm"] > TapeMaxErrorCm else "ok"}
+    return {**Aware, "tape_roll_gated_reason": Tape.get("tape_reason")}
 
 
 def Verdict(Check: dict[str, Any] | None) -> str:
@@ -917,6 +1246,8 @@ def _DeskChanged(Desk: dict[str, Any], Plane: dict[str, Any], Tape: dict[str, An
     Change = {"angle_deg": Desk["angle_deg"], "offset_cm": Desk["offset_cm"], "agreeing_share": Desk.get("desk_agreeing_share"),
               "plane_angle_deg": round(Tilt, 3), "plane_offset_cm": round(Shift, 3), "error_code": Desk["error_code"],
               "reason": Desk["reason"]}
+    if Desk.get("desk_occluded_cells"):  # the arm's cells, left out of the change (ArmOcclusion), and those it hides
+        Change.update(occluded_cells=Desk["desk_occluded_cells"], hidden_cells=Desk.get("desk_hidden_cells", 0))
     Moved = f"the desk moved {Tilt:.2f} deg / {Shift:+.2f} cm against the camera since calibration"
     if Tape["tape_check"] == "ok" and Tape["tape_error_cm"] > CartTapeMaxErrorCm:
         Tape = {**Tape, "tape_check": "moved"}  # both the desk and the tape say the camera moved

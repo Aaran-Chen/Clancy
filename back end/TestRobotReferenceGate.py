@@ -1,10 +1,13 @@
-"""CheckCapture's order: the desk path first and unchanged; the robot decides only with the calibrated desk out of view.
+"""CheckCapture's order: the desk path first and unchanged; the robot decides only where the calibrated desk cannot.
 
-With the desk out of view the camera is assumed where it was calibrated and the gripper tape checks it
-(RobotReference.Check): verified passes, moved blocks, not judgeable passes as "assumed" with a warning.
-The basket rim is advisory there and never blocks. With the desk in view the robot's reading only rides
-along (RobotReference.ShadowKey). The desk path and the tape are patched here where their own results are
-beside the point; TestRobotReference.py checks the tape on real frames. No hardware.
+With the desk out of view the camera is assumed where it was calibrated and the robot's witnesses check it
+(RobotReference.Check): either the gripper tape or the basket rim off past its limits blocks, the tape within its
+limit verifies (with the rim, or alone where the rim cannot judge), a tape that cannot judge passes as "assumed"
+with a warning. With a desk in view that disagrees and that the cart-move path could not explain (2026-10-25:
+CameraDrift._DeskDiffers), both witnesses must agree, nothing is assumed, and a tape that cannot judge leaves the
+desk's own block. Otherwise the robot's reading only rides along (RobotReference.ShadowKey). The desk path, the
+tape and the rim are patched here where their own results are beside the point; TestRobotReference.py and
+TestShelfCapture.py check them on real frames. No hardware.
 
 Run:  python TestRobotReferenceGate.py
 """
@@ -113,13 +116,27 @@ class GateOrderTests(unittest.TestCase):
                 Self.assertIn(Why, Checked["warning"])
                 Self.assertEqual(Checked["warning"].count("\n"), 0)
 
-    def TestTheRimNeverBlocksAndIsNeverRequired(Self):
-        Verified = Self.Capture(Desk(), True, "ok", Rim=RimMoved)
-        Self.assertEqual((Verified["ok"], Verified["robot_check"], Verified["rim_check"], Verified["rim_yaw_deg"]), (True, "verified", "moved", -3.1))
-        Assumed = Self.Capture(Desk(), True, "not_visible", Rim=RimMoved)
+    def TestTheRimBlocksWhenItReadsMovedAndIsNotRequiredWithNoDesk(Self):
+        # Either witness off past its limits blocks (2026-10-25): the rim reading moved beside a tape within its limit, or
+        # beside a tape that cannot judge (which used to pass as assumed, the tripwire catching it only after the model call).
+        for Tape in ("ok", "not_visible"):
+            with Self.subTest(Tape):
+                Moved = Self.Capture(Desk(), True, Tape, Rim=RimMoved)
+                Self.assertEqual((Moved["ok"], Moved["error_code"], Moved["robot_check"], Moved["rim_check"]), (False, "camera_moved", "moved", "moved"))
+                Self.assertEqual(Moved["error"], "The camera turned on the robot since calibration at 21:09: the basket's front rim looks 3.10 deg / "
+                                                 "0.63 cm off (limits 1.25 deg / 0.75 cm). Lock the camera head, then run Automatic calibration.")
+                Self.assertNotIn("warning", Moved)
+        Both = Self.Capture(Desk(), True, "ok")
+        Self.assertEqual((Both["ok"], Both["robot_check"], Both["robot_witnesses"], Both["robot_mode"]), (True, "verified", ["tape", "rim"], "desk_absent"))
+        # With no desk in view the rim is not required (Aaran, 2026-10-06): the tape within its limit verifies alone.
+        for Rim in ({"rim_check": "unavailable", "rim_reason": RobotReference.NoRimReason},
+                    {"rim_check": "not_judgeable", "rim_reason": "only 12 of 28 cm of the rim are clear, 8 agreeing"}):
+            with Self.subTest(Rim["rim_check"]):
+                Alone = Self.Capture(Desk(), True, "ok", Rim=Rim)
+                Self.assertEqual((Alone["ok"], Alone["robot_check"], Alone["robot_witnesses"]), (True, "verified", ["tape"]), Alone)
+                Self.assertIn(Rim["rim_reason"], Alone["reason"])
+        Assumed = Self.Capture(Desk(), True, "not_visible", Rim={"rim_check": "not_judgeable", "rim_reason": "only 12 of 28 cm"})
         Self.assertEqual((Assumed["ok"], Assumed["robot_check"]), (True, "assumed"))
-        Missing = Self.Capture(Desk(), True, "ok", Rim={"rim_check": "unavailable", "rim_reason": "no calibration frames of the rim to compare with"})
-        Self.assertEqual((Missing["ok"], Missing["robot_check"]), (True, "verified"))
         # A rim keyframe match that fails outright (RobotCameraReference) is reported, never raised.
         with patch.object(RobotCameraReference, "Check", side_effect=RuntimeError("keyframe unreadable")), \
                 patch.object(RobotReference, "RimBaseline", return_value=None):
@@ -156,6 +173,58 @@ class GateOrderTests(unittest.TestCase):
             with Self.subTest(Result["reason"]):
                 Checked = Self.Capture(Result, False, "ok", Depth_=None)
                 Self.assertEqual(Checked, Result)
+
+    def TestADeskInViewThatDisagreesIsDecidedByBothWitnesses(Self):
+        # The cart-move path's blocks with the tape within its limit (2026-10-25 22:15 at the shelf): beyond a cart's tilt or
+        # shift, not re-measurable, and the desk's own camera_moved beyond a cart's; desk_changed_unverified too.
+        Change = {"plane_angle_deg": 4.17, "plane_offset_cm": 3.771, "error_code": "camera_check_failed"}
+        Beyond = Desk(Reason="only 55% of the calibrated desk in view agrees ...; more than moving the cart does", tape_check="ok",
+                      tape_error_cm=0.58, desk_change=Change)
+        Cases = {"beyond a cart": Beyond,
+                 "not re-measurable": Desk(Reason="the desk moved ...; the desk could not be re-measured on this frame", tape_check="ok",
+                                           tape_error_cm=0.4, desk_change=dict(Change, plane_angle_deg=1.7, plane_offset_cm=0.1)),
+                 "desk moved beyond a cart": Desk(Code="camera_moved", Reason="desk plane changed by 6.10 deg / +0.20 cm; ... more than moving the cart does",
+                                                  tape_check="ok", tape_error_cm=0.5, desk_change=dict(Change, plane_angle_deg=6.1, error_code="camera_moved")),
+                 "tape could not judge": Desk(Code="desk_changed_unverified", Reason="the desk moved 2.0 deg ...", tape_check="not_visible",
+                                              desk_change=dict(Change, plane_angle_deg=2.0))}
+        for Name, Result in Cases.items():
+            with Self.subTest(Name):
+                Self.assertTrue(CameraDrift._DeskDiffers(Result))
+                Verified = Self.Capture(Result, False, "ok")
+                Self.assertEqual((Verified["ok"], Verified["alignment_source"], Verified["robot_mode"], Verified["robot_check"], Verified["robot_witnesses"]),
+                                 (True, "robot", "desk_differs", "verified", ["tape", "rim"]), Verified)
+                Self.assertEqual(Verified["desk_check"], Result, "the desk path's result rides along unchanged")
+                Self.assertNotIn("error_code", Verified)
+                Moved = Self.Capture(Result, False, "ok", Rim=RimMoved)
+                Self.assertEqual((Moved["ok"], Moved["error_code"], Moved["robot_check"]), (False, "camera_moved", "moved"))
+                Self.assertIn("limits 1 deg / 0.6 cm", Moved["error"], "closer rim limits where a desk disagrees")
+                Self.assertEqual(Self.Capture(Result, False, "moved")["error_code"], "camera_moved")
+                # Nothing is assumed: the tape alone never verifies, and a tape that cannot judge leaves the desk's own block.
+                for Rim, Words in (({"rim_check": "unavailable", "rim_reason": RobotReference.NoRimReason}, "has not been recorded for this calibration yet"),
+                                   ({"rim_check": "not_judgeable", "rim_reason": "only 12 of 28 cm of the rim are clear, 8 agreeing"}, "Take things off the basket's front edge"),
+                                   ({"rim_check": "not_judgeable", "rim_reference_short": True, "rim_reason": "only 19 of 28 cm ..."}, "has been recorded yet")):
+                    Alone = Self.Capture(Result, False, "ok", Rim=Rim)
+                    Self.assertEqual((Alone["ok"], Alone["error_code"], Alone["robot_check"]), (False, "camera_check_failed", "unverified"), Alone)
+                    Self.assertIn(Words, Alone["error"])
+                    Self.assertTrue(Alone["error"].endswith("No recalibration is needed."), Alone["error"])
+                for Tape in ("not_visible", "pose_differs", "arm moving", "ambiguous"):
+                    Unjudged = Self.Capture(Result, False, Tape)
+                    Self.assertEqual({Key: Value for Key, Value in Unjudged.items() if Key != RobotReference.ShadowKey}, Result)
+                    Self.assertEqual(Unjudged[RobotReference.ShadowKey]["robot_check"], "unverified")
+                    Self.assertNotIn("alignment_source", Unjudged)
+        # Never handed over: the tape said moved, a desk camera_moved within a cart's reach (the cart path re-measures or the
+        # tape decides there), blocks with no desk disagreement (no calibration, no depth, a cluttered desk with no cart check).
+        for Name, Result in (("tape moved", Desk(Code="camera_moved", tape_check="moved", tape_error_cm=1.2, desk_change=Change)),
+                             ("desk moved within a cart's", Desk(Code="camera_moved", tape_check="ok", tape_error_cm=0.5,
+                                                                 desk_change=dict(Change, plane_angle_deg=2.0, plane_offset_cm=0.5, error_code="camera_moved"))),
+                             ("desk moved beyond, tape not judged", Desk(Code="camera_moved", tape_check="not_visible",
+                                                                         desk_change=dict(Change, plane_angle_deg=6.1, error_code="camera_moved"))),
+                             ("no calibration", Desk(Code="camera_not_verified")),
+                             ("cluttered desk, no tape offset", Desk(Reason="only 52% of the calibrated desk in view agrees"))):
+            with Self.subTest(Name):
+                Self.assertFalse(CameraDrift._DeskDiffers(Result))
+                Checked = Self.Capture(Result, False, "ok")
+                Self.assertEqual({Key: Value for Key, Value in Checked.items() if Key != RobotReference.ShadowKey}, Result)
 
     def TestVerdictNamesEachOutcome(Self):
         Self.assertEqual(CameraDrift.Verdict(Desk(Ok=True)), "desk_verified")

@@ -11,11 +11,12 @@ import Http from "node:http";
 import Net from "node:net";
 import Os from "node:os";
 import Path from "node:path";
+import { BackendPython } from "./UiTestLib.mjs";
 
 const App = import.meta.dirname, Backend = Path.resolve(App, "../back end");
 const Scratch = Fs.mkdtempSync(Path.join(Os.tmpdir(), "so101-session-video-"));
 const LivePorts = new Set([5181, 8000, 8001, 8002, 11434]);
-const Python = Fs.readFileSync(Path.join(App, "../.backend-python.txt"), "utf8").replace(/^﻿/, "").trim();
+const Python = BackendPython();
 const Load = async File => {
   const Bundle = await Build({ entryPoints: [File], bundle: true, write: false, platform: "node", format: "esm" });
   return import(`data:text/javascript;base64,${Buffer.from(Bundle.outputFiles[0].text).toString("base64")}`);

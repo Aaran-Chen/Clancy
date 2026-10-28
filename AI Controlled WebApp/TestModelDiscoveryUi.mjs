@@ -2,14 +2,13 @@
 // dev server to start Ollama) instead of staying "offline" until a reload.
 // Serves this checkout on its own port (UiTestLib.mjs); the bridge and Ollama are mocked.
 import { chromium as Chromium } from "playwright";
-import { LaunchOptions, StartUiServer } from "./UiTestLib.mjs";
-import { readFileSync as ReadFile } from "node:fs";
+import { LaunchOptions, StartUiServer, BackendPython } from "./UiTestLib.mjs";
 import { execFileSync as Execute } from "node:child_process";
 import { fileURLToPath as FilePath } from "node:url";
 import Path from "node:path";
 import Assert from "node:assert/strict";
 const Root = Path.dirname(FilePath(import.meta.url)), Backend = Path.resolve(Root, "../back end");
-const Python = ReadFile(Path.join(Root, "../.backend-python.txt"), "utf8").trim();
+const Python = BackendPython();
 const State = JSON.parse(Execute(Python, ["-c", "import json, bridge_server; print(json.dumps(bridge_server.BridgeController().state_snapshot()))"], { cwd: Backend, encoding: "utf8" }));
 const Server = await StartUiServer();
 const Browser = await Chromium.launch(LaunchOptions());

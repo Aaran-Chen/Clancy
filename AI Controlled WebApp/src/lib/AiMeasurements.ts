@@ -3,7 +3,7 @@ import { CadSolve } from "./CadKinematics";
 import { currentAngles, GetIkAngleLimits, mirrorDisplayPoint, modelPointFromDisplayPoint, solveIkPreview, type IkAngleLimits, type Point3,
   type ServoName, type ServoState } from "./robotModel";
 import { NamesQuery, ParseTaskObject, TaskIntent, type TaskIntentKind, type TaskObjectBinding, type TaskObjectQuery } from "./TaskObject";
-import { AtHoverPoint, FloorPrism, FootprintDistance, GraspPrism, GraspRules, GuardPrisms, ObjectPrism, PlanClearanceCm, PlanGrasp, ScenePrisms, StraddleAtTip, TapeCorrection, TapeText, UnmeasuredRefusal,
+import { AtHoverPoint, FloorPrism, FootprintDistance, GraspPrism, GraspRules, GuardPrisms, ObjectPrism, PlanClearanceCm, PlanGrasp, RawTurn, ScenePrisms, StraddleAtTip, TaskContactPrisms, TapeCorrection, TapeText, UnmeasuredRefusal,
   type GraspGuard, type GraspPlan, type GraspPlanState, type GraspRefusal, type HeightBy, type PlannedStep, type Prism, type TapeFix, type XY } from "./GraspPlan";
 import { SweepRules } from "./JawSweep";
 import { GraspGapHint } from "./GraspGap";
@@ -11,7 +11,7 @@ import { HiddenText, type ArmOcclusion } from "./ArmOcclusion";
 import { DeclaredSurfaceList, SurfaceContains, SurfaceText, type DeclaredSurface } from "./DeclaredSurfaces";
 import { DeskFloor, FloorText, SurfaceFloor, type AiFloor } from "./AiTableFloor";
 import ReachEnvelope from "./ReachEnvelope.json";
-import { HasVerifiedDepthFrame, ReadMeasuredScene, ReadMeasuredSupport, type MeasuredScene, type MeasuredSupport } from "./SceneGeometry";
+import { DeskSolids, HasVerifiedDepthFrame, ReadMeasuredScene, ReadMeasuredSupport, type MeasuredScene, type MeasuredSupport, type SceneSolid } from "./SceneGeometry";
 
 export { BindFromEstimate, EditDistance, EstimateGateCm, NamesQuery, ParseTaskObject, ResolveTaskObject, TaskIntent, TrackCm,
   type TaskIntentKind, type TaskObjectBinding, type TaskObjectQuery, type TaskObjectResolution, type TaskObjectSource } from "./TaskObject";
@@ -40,6 +40,8 @@ export type LocatedObject = {
   supportSurface?: string | null;
   supportGeometry?: MeasuredSupport | null;
   scene?: MeasuredScene | null;
+  // A desk object's scene solids (SceneGeometry DeskSolids): its scene was registered on the desk and is not used.
+  deskSolids?: SceneSolid[];
   sceneChecked?: boolean;
   localizationFrame?: "calibrated_depth_3d" | null;
   outsideCalibrationZCm?: number | null;
@@ -155,8 +157,16 @@ export function ReadLocateResponse(Data: unknown): LocateResult | null {
   const Binds = (Item: unknown) => !!Decoded && IsRecord(Item) && Item.scene_id === Decoded.id && !!ReadMeasuredSupport(Item.support_geometry);
   const Mismatched = !!Decoded && Data.objects.some(Item => IsRecord(Item)
     && ((Item.scene_id != null && Item.scene_id !== Decoded.id) || (Item.task_match === true && !Binds(Item))));
-  const Scene = Decoded && !Mismatched ? Decoded : null;
+  const Whole = Decoded && !Mismatched ? Decoded : null;
+  // A DESK SCENE (SceneGeometry DeskSolids): the task object lies on the desk. It reads as a desk object, its scene's
+  // solids clear of the desk kept as its floor's obstacles (TaskSupport), the solid the bridge measured against it
+  // (task_contact) among them. (An older bridge's scene, without task_contact, is used as before.)
+  const DeskTask = Whole && Whole.task_contact !== undefined
+    ? Data.objects.find(Item => IsRecord(Item) && Item.task_match === true && Binds(Item) && Item.support_branch === "desk") : undefined;
+  const Scene = DeskTask ? null : Whole;
+  const Solids = Whole && DeskTask ? DeskSolids(Whole) : null;
   const SceneNote = Scene ? null
+    : Solids ? `the task object lies on the desk: read as desk objects, the scene's ${Solids.length} solid${Solids.length === 1 ? "" : "s"} clear of the desk kept as obstacles`
     : Data.scene != null && !Decoded ? "the bridge's scene did not decode; read as desk objects"
     : Mismatched ? "the bridge's scene did not match the task object; read as desk objects"
     : typeof Data.scene_error === "string" ? `no scene registered (${Data.scene_error}); read as desk objects`
@@ -189,6 +199,7 @@ export function ReadLocateResponse(Data: unknown): LocateResult | null {
         sceneChecked: !!Scene && Item.scene_id === Scene.id && CameraCheck_?.Ok === true && CameraCheck_.RobotCheck !== "assumed"
           && Item.scene_checked === true && Item.method === "depth",
         localizationFrame: Item.localization_frame === "calibrated_depth_3d" ? "calibrated_depth_3d" as const : null } : {}),
+      ...(Solids && Item === DeskTask ? { deskSolids: Solids } : {}),
       taskMatch: Item.task_match === true, taskQueryOnly: Item.task_query_only === true,
       refined: typeof Item.refined === "boolean" ? Item.refined : null, outsideCalibrationCm: ReadNumber(Item.outside_calibration_cm),
       ...("arm_fraction" in Item ? { armFraction: ReadNumber(Item.arm_fraction) } : {}) }];
@@ -261,8 +272,10 @@ export function CameraGateFailure(Located: LocateResult | null, NeedsPositions: 
       ? "Tasks that act on objects need the depth camera: a webcam capture cannot be checked against its calibration. Switch to the depth camera and run Automatic calibration."
       : "The saved calibration has no camera check reference, so object positions cannot be trusted: lock the head and run Automatic calibration." };
   }
+  // The bridge's sentence says why: no depth frame, no desk in view, or a desk measured that looks different (audit 2 M6).
   if (Code === "camera_check_failed") {
-    return { Code, Detail, Title: "The camera could not be checked against its calibration (the desk was not measured): clear the desk in view, or lock the head and run Automatic calibration." };
+    if (Located?.error) return { Code, Detail: Check?.Reason ?? "", Title: Located.error };
+    return { Code, Detail, Title: "The camera could not be checked against its calibration: clear the desk in view, or lock the head and run Automatic calibration." };
   }
   // The desk moved against the arm (the cart was rolled) and the gripper tape, which would tell a still
   // camera from a moved one, could not be judged: not a moved camera, so no recalibration. The bridge's
@@ -459,7 +472,10 @@ export function TaskSupport(Object_: LocatedObject | null, Label = Object_?.labe
     if (!Scene.free_space?.length) return Refusal("the camera cannot yet see a clear approach around the object", Floor);
     return { Floor, Refusal: null };
   }
-  if (!Object_ || Object_.supportBranch !== "surface") return { Floor: DeskFloor, Refusal: null };
+  // A desk object with its scene's solids (ReadLocateResponse, SceneGeometry DeskSolids): the desk's floor, those solids on it.
+  if (!Object_ || Object_.supportBranch !== "surface") {
+    return { Floor: Object_?.deskSolids?.length && Object_.supportBranch === "desk" ? { ...DeskFloor, Solids: Object_.deskSolids } : DeskFloor, Refusal: null };
+  }
   const Surface = DeclaredSurfaceOf(Object_, Surfaces);
   const Refuse = (Text: string, Advice: string, Floor = DeskFloor) => ({ Floor, Refusal: { Code: "surface" as const, Text, Advice } });
   if (!Surface) {
@@ -601,7 +617,8 @@ function MovesFromTip(Object_: LocatedObject, Tip: Point3, Reach: TaskReachabili
  * close was approved in this task. Held: the target the arm is holding (the
  * bridge's, display frame), so a step never repeats a move that would not move it.
  */
-export type GraspState = { GripperFraction: number; Closed: boolean; Held?: { Point: Point3; Pitch: number } | null };
+// RollRaw: the wrist roll's reading now (a GRASP PLAN made at another roll turns it there first, GraspPlan RollRaw).
+export type GraspState = { GripperFraction: number; Closed: boolean; Held?: { Point: Point3; Pitch: number } | null; RollRaw?: number | null };
 // Opened to this, not 1.0: a full open stopped at raw 1971 (0.83) short of its
 // 2242 target and the arm read as moving until the next task timed out (2026-09-29 22:55).
 export const GripperOpenFraction = 0.8;
@@ -653,6 +670,8 @@ const GraspReachedCm = 1.0;
 const JawsAroundCm = 0.3;
 const LiftCm = GraspRules.LiftCm;
 const GripperJson = (Fraction: number) => `{"direct_servo_targets":[{"name":"gripper","target_fraction":${Fraction.toFixed(1)}}]}`;
+// A GRASP PLAN's wrist roll turn (GraspPlan RollRaw), by its raw value.
+const RollJson = (Raw: number) => `{"direct_servo_targets":[{"name":"wrist_roll","target_raw":${Math.round(Raw)}}]}`;
 // CHAINED MOTIONS (lib/AiChain.ts): a tip move's JSON with the gripper action that runs before it,
 // and the one chain offered after a close: close, then lift straight up (the gripper first).
 const ChainedJson = (Move: string, Fraction: number) => `${Move.slice(0, -1)},"gripper_before":${Fraction.toFixed(1)}}`;
@@ -795,12 +814,19 @@ function PlanText(Plan: GraspPlan, Label: string) {
       + Tip(Closing) + ` The app checked that grip for it ${Sizes} and up to ${GraspRules.DepthToleranceCm.toFixed(1)} cm off along the fingers.` + Real;
   // The gap is the user's setting (Settings > Grasp gap at the fixed finger, GraspGap.ts): the model is told which it is,
   // and why a setting below the default was not used (GraspPlan.ts ClearanceFor: only a round object's plan corrects for the real finger).
-  const GapWords = Plan.GapSetCm != null && Plan.GapSetCm < Gap
-    ? ` The user set the grasp gap to ${Plan.GapSetCm.toFixed(1)} cm, but the fixed jaw keeps the default ${Gap.toFixed(1)} cm beside the ${Label}: only a round object's GRASP PLAN corrects for where the real fixed finger stands.`
+  // (And the fixed jaw's extra standoff, GraspPlan.ts GraspRules.FixedJawExtraStandoffCm: Gap counts it, Base does not.)
+  const Extra = Plan.ExtraStandoffCm ?? 0, Base = Gap - Extra;
+  const ExtraWords = Extra > 1e-9 ? ` plus ${Extra.toFixed(1)} cm more the app keeps the fixed jaw from it (the real fixed jaw came too close to the objects it grasped), so the moving jaw closes that much farther; do not move the tip toward the ${Label} to close that gap` : "";
+  const GapWords = Plan.GapSetCm != null && Plan.GapSetCm < Base
+    ? ` The user set the grasp gap to ${Plan.GapSetCm.toFixed(1)} cm, but the fixed jaw keeps the default ${Base.toFixed(1)} cm${ExtraWords} beside the ${Label}: only a round object's GRASP PLAN corrects for where the real fixed finger stands.`
+    : Extra > 1e-9 ? ` That ${Gap.toFixed(1)} cm is the ${Base.toFixed(1)} cm grasp gap the user set for the fixed jaw${ExtraWords}.`
     : ` That ${Gap.toFixed(1)} cm is the grasp gap the user set for the fixed jaw.`;
   return BestEffortText(Plan, Label) + ` GRASP PLAN (checked by the app against the gripper's shape): the tip is the inner face of the FIXED jaw (the one with the red tape) and only the other jaw moves, so the tip goes BESIDE the ${Label}, ${Gap.toFixed(1)} cm outside its ${Plan.Side} side${Beside}, NOT over its centre; the open moving jaw then closes across it and pushes it against the fixed jaw.`
-    + `${GapWords} The grasp height is ${HeightWords[Plan.HeightBy](Plan)}.${Sweep}`;
+    + `${GapWords} The grasp height is ${HeightWords[Plan.HeightBy](Plan)}.${Sweep}${RollWords(Plan)}`;
 }
+// A plan made at another wrist roll (GraspPlan RollRaw): the steps turn it there first.
+const RollWords = (Plan: GraspPlan) => Plan.RollRaw == null ? ""
+  : ` The GRASP PLAN is checked with the wrist roll at raw ${Plan.RollRaw}, not the raw ${Plan.RollFromRaw ?? "?"} the arm held when it was made (at that roll no grasp fits): the NEXT STEP turns it there before the approach.`;
 /**
  * A best-effort plan (GraspRules.BestEffort): the user asked the app to try unless it is sure the grasp cannot
  * work, so the model is told what the app is not sure of, and to follow the steps anyway.
@@ -811,9 +837,11 @@ export function BestEffortText(Plan: GraspPlan, Label: string) {
     + ` (the arm reaches it clear of the basket, the desk and the other objects), so it is planned anyway: attempt it, following its steps as for any GRASP PLAN;`
     + ` do not give up or reply ask over these warnings, the user approves each move. After the close, if the image shows the ${Label} slipped out or was pushed away, reply ask.`;
 }
-/** The approval card's note for a move of a best-effort grasp (BestEffortText), or null. */
+/** The approval card's note for a move of a best-effort grasp (BestEffortText), and of a plan's caveats (GraspPlan Caveats), or null. */
 export function BestEffortNote(Plan: GraspPlan | null | undefined) {
-  return Plan?.Warnings?.length ? `Best-effort grasp, may not work: ${Plan.Warnings.join("; ")}.` : null;
+  const Notes = [...(Plan?.Warnings?.length ? [`Best-effort grasp, may not work: ${Plan.Warnings.join("; ")}.`] : []),
+    ...(Plan?.Caveats ?? []).map(Why => `${Why.charAt(0).toUpperCase()}${Why.slice(1)}.`)];
+  return Notes.length ? Notes.join(" ") : null;
 }
 /**
  * Where a round object's sweep plan leaves it against the fixed finger
@@ -838,8 +866,13 @@ const HoverStep = (Plan: GraspPlan, Label: string) => (Plan.Approach ? `go to th
 const SetAndHoverStep = (Plan: GraspPlan, Label: string, Set: string, Opens: boolean) => `${Set} and go to the HOVER POINT, straight above the grasp point beside the ${Label}`
   + ` (not above its centre), as ONE chained motion (${Opens ? "the gripper opens while the tip moves" : "the gripper first, then the tip"}): "motion_proposal":${ChainedJson(HoverJson(Plan), Plan.OpenFraction)}.`;
 // Close, then lift straight up, as ONE chained motion: the bridge holds what the jaws stop on, then the tip rises.
-const CloseAndLiftStep = `close the gripper and lift as ONE chained motion (the moving jaw pushes it against the fixed jaw and the gripper holds it, then the tip rises ${LiftCm} cm straight up): `
-  + `"motion_proposal":${CloseAndLiftJson(LiftCm)}.`;
+// (A plan's lift in steps, GraspPlan LiftStepCm: the first step; the next check-ins lift on, a step at a time.)
+const CloseAndLiftStepOf = (Lift: number) => `close the gripper and lift as ONE chained motion (the moving jaw pushes it against the fixed jaw and the gripper holds it, then the tip rises ${Lift} cm straight up): `
+  + `"motion_proposal":${CloseAndLiftJson(Lift)}.`;
+const CloseAndLiftStep = CloseAndLiftStepOf(LiftCm);
+/** A plan's lift step (GraspPlan LiftStepCm: a desk object's lift clear of its scene solids in steps), else GraspRules.LiftCm. */
+export const PlanLiftStepCm = (Plan: GraspPlan) => Plan.LiftStepCm ?? LiftCm;
+const LiftNumber = (Cm: number) => Number(Cm.toFixed(1));
 // Measured once so far (no second measurement agreed): the image decides the descent. Hidden by the arm over it
 // (ArmOcclusion.ts) the image cannot show the jaws beside it: the step goes on from its last measurement
 // (2026-10-03 16:42: the model asked twice, the pill bottle under the open jaws).
@@ -985,7 +1018,9 @@ export function NextPlannedGraspStep(Plan: GraspPlan, Tip: Point3, Grasp: GraspS
         : `${Head}the jaws closed all the way, so they missed it. Open the gripper: "motion_proposal":${GripperJson(Plan.OpenFraction)}.${Again}${StepCopy}`;
     }
     if (Tip.z < Point.z + LiftCm - 1) {
-      return `${Head}the jaws stopped partway, so they hold something. Lift it straight up: "motion_proposal":{"move_delta_cm":{"left":0,"farther":0,"up":${LiftCm}}}.${StepCopy}`;
+      // (In the plan's steps, LiftCm in all: each checked clear of the scene's solids, DeskLift.)
+      const Step = PlanLiftStepCm(Plan);
+      return `${Head}the jaws stopped partway, so they hold something. Lift it straight up${Step < LiftCm ? ` (${LiftNumber(Step)} cm at a time: the GRASP PLAN's lift, clear of what stands against it)` : ""}: "motion_proposal":{"move_delta_cm":{"left":0,"farther":0,"up":${LiftNumber(Step)}}}.${StepCopy}`;
     }
     return `${Head}it is lifted. If the image shows it in the jaws, reply task_status "done"; if not, reply ask.`;
   }
@@ -1000,6 +1035,16 @@ export function NextPlannedGraspStep(Plan: GraspPlan, Tip: Point3, Grasp: GraspS
   // M1 plan may stand wider (the guard checks the jaw where it is).
   const Open = Plan.OpenFraction, Tolerance = GraspRules.OpenToleranceFraction;
   const Beside = Tip.z < Hover.z - 1 && FootprintDistance(Plan.Prism.Footprint, Tip) <= GraspRules.NearCm;
+  // FREE WRIST ROLL (GraspPlan RollRaw): a plan made at another wrist roll turns it there before anything else, clear of
+  // the object (low beside it, the tip rises first); the guard checks the turn (GraspPlan WristRollTurnReason).
+  if (Plan.RollRaw != null && Grasp.RollRaw != null && Math.abs(RawTurn(Grasp.RollRaw, Plan.RollRaw)) > GraspRules.RollToleranceRaw) {
+    if (Beside || Tip.z < Top - 0.3) {
+      return `${Head}the wrist roll is not yet where the GRASP PLAN was checked, and the tip is low beside the ${Label}: rise straight up to ${ToHover} before turning it: ${RiseToHover}.${StepCopy}`;
+    }
+    const Turn = RawTurn(Grasp.RollRaw, Plan.RollRaw) * 360 / 4096;
+    return `${Head}turn the wrist roll ${Math.abs(Turn).toFixed(0)} deg (raw ${Grasp.RollRaw} to ${Plan.RollRaw}) before approaching it: the GRASP PLAN was checked with the jaws turned so they close across the ${Label} that way.`
+      + ` This is the only wrist_roll change the app accepts in this task: "motion_proposal":${RollJson(Plan.RollRaw)}.${StepCopy}`;
+  }
   // d = tip - grasp point, along u (toward the object) and across it.
   const Dx = Tip.x - Point.x, Dy = Tip.y - Point.y;
   const Along = Dx * Plan.JawAxis.x + Dy * Plan.JawAxis.y, Across = -Dx * Plan.JawAxis.y + Dy * Plan.JawAxis.x;
@@ -1023,8 +1068,9 @@ export function NextPlannedGraspStep(Plan: GraspPlan, Tip: Point3, Grasp: GraspS
       const Less = Grasp.GripperFraction < OpenEnoughFraction ? "closed" : `less open than the GRASP PLAN's ${Math.round(Open * 100)}%`;
       return `${Head}the gripper is ${Less} beside the ${Label}: rise straight up to ${ToHover} before opening it: ${RiseToHover}.${StepCopy}`;
     }
-    if (HoverNext) return `${Head}${SetAndHoverStep(Plan, Label, `open the gripper to ${Math.round(Open * 100)}%`, true)}${Once}${OpenChainCopy}`;
-    return `${Head}open the gripper before approaching it: "motion_proposal":${GripperJson(Open)}.${StepCopy}`;
+    // (A full open, wider than a chained open may go, lib/AiChain.ts ChainedFraction: its own step, then the hover.)
+    if (HoverNext && Open <= GripperOpenFraction + 0.005) return `${Head}${SetAndHoverStep(Plan, Label, `open the gripper to ${Math.round(Open * 100)}%`, true)}${Once}${OpenChainCopy}`;
+    return `${Head}open the gripper${Open > GripperOpenFraction + 0.005 ? ` fully (${Math.round(Open * 100)}%: the GRASP PLAN needs the jaws that wide)` : ""} before approaching it: "motion_proposal":${GripperJson(Open)}.${StepCopy}`;
   }
   // Wider open than an M3 plan checked (it opens less, so the jaw stays clear of what is beside it):
   // set it to the plan's above the object's top (narrowing it there is not a close).
@@ -1037,7 +1083,7 @@ export function NextPlannedGraspStep(Plan: GraspPlan, Tip: Point3, Grasp: GraspS
     return `${Head}the gripper is wider open than the GRASP PLAN's ${Math.round(Open * 100)}% beside the ${Label}: rise straight up to ${ToHover} first: ${RiseToHover}.${StepCopy}`;
   }
   // The close and the straight lift after it, as ONE chained motion (the lift is the step after any close).
-  const Close = `${CloseAndLiftStep}${ChainCopy}`;
+  const Close = `${CloseAndLiftStepOf(LiftNumber(PlanLiftStepCm(Plan)))}${ChainCopy}`;
   if (!Aligned) {
     if (Tip.z < Top - 0.3) {
       return `${Head}the tip is below the ${Label}'s top but not at the grasp point: rise straight up first: ${RiseToHover}.${StepCopy}`;
@@ -1114,9 +1160,43 @@ export function BuildGraspGuard(Measured: LocatedObject[] | null, State: TaskObj
   const Intent = State.Intent ?? TaskIntent(State.Query);
   const Holds = !!State.Plan?.Reach.Plan && Intent === "grasp" && !Held && !!TaskPrism;
   // The surface it stands on: every target held to its floor, every way to them clear of a raised one (TaskSupport, FloorPrism).
-  const Floor = TaskSupport(Current, State.Label).Floor, Surface = Floor.Scene ? null : FloorPrism(Floor);
-  return { Prisms: [...Prisms, ...(Corridor ? [Corridor] : []), ...(Surface ? [Surface] : []), ...ScenePrisms(Floor)], TaskPrism, Plan, Refusal: Verdict?.Refusal ?? null, Held,
-    Intent, TaskLabel: State.Label, Step: Holds ? Step : null, ...(Floor.Surface ? { Floor } : {}) };
+  const Floor = WithPlanSolids(TaskSupport(Current, State.Label).Floor, State.Plan?.Source ?? null), Surface = Floor.Scene ? null : FloorPrism(Floor);
+  // Its floor goes with it where it holds a surface or solids: the held object's box is checked against those (GraspGuardReason).
+  // (And the part of a solid against it its measurement took in, beside the prism it is held as: TaskContactPrisms.)
+  return { Prisms: [...Prisms, ...(Corridor ? [Corridor] : []), ...(Surface ? [Surface] : []), ...ScenePrisms(Floor), ...TaskContactPrisms(Floor, Plan?.Prism ?? TaskPrism)],
+    TaskPrism, Plan, Refusal: Verdict?.Refusal ?? null, Held,
+    Intent, TaskLabel: State.Label, Step: Holds ? Step : null, ...(Floor.Surface || Floor.Solids?.length ? { Floor } : {}) };
+}
+/**
+ * A desk object's floor for planning it again on a frame that registered no scene (review round 3: after a missed close
+ * or a move, the gripper over the object, "the supporting surface is not visible"), as TaskSupport gives it: the desk's,
+ * and without this none of the solids the last plan was made clear of (the keyboard against the pill bottle, every
+ * other solid of its scene). Prior: the task's last plan's Source (its deskSolids, the solid the camera measured
+ * against it among them). Kept while this frame has neither a scene nor desk solids of its own, for a desk object
+ * whose plan was a desk object's; a frame with its own desk scene plans with that alone.
+ */
+export function KeptDeskFloor(Floor: AiFloor, Object_: LocatedObject, Prior: LocatedObject | null): AiFloor {
+  const Kept = !Floor.Scene && !Floor.Surface && !Floor.Solids?.length && !Object_.scene && Object_.supportBranch === "desk"
+    && Prior?.supportBranch === "desk" ? Prior.deskSolids ?? [] : [];
+  return Kept.length ? { ...Floor, Solids: Kept } : Floor;
+}
+/** The measured object a new plan is made from (its Source), with the desk solids its floor kept (KeptDeskFloor): so its guard keeps them too. */
+export function PlanSource(Object_: LocatedObject, Floor: AiFloor): LocatedObject {
+  return Floor.Solids?.length && Floor.Solids !== Object_.deskSolids && Object_.supportBranch === "desk" && !Object_.scene
+    ? { ...Object_, deskSolids: Floor.Solids } : Object_;
+}
+/**
+ * A desk floor with the scene solids its plan was made clear of (the plan's Source: the desk object as planned, its
+ * deskSolids, the solid the camera measured against it among them) besides this frame's. A kept plan is kept on a
+ * check-in whose frame registered no scene (the gripper over the object: "the supporting surface is not visible"), and
+ * the guard of that frame held only the measured objects: the keyboard the bottle stood against was none of them.
+ */
+function WithPlanSolids(Floor: AiFloor, Source: LocatedObject | null): AiFloor {
+  const Planned = !Floor.Scene && !Floor.Surface && Source?.supportBranch === "desk" ? Source.deskSolids ?? [] : [];
+  if (!Planned.length) return Floor;
+  const Key = (Box: SceneSolid) => `${Box.label}|${Box.min.join(",")}|${Box.max.join(",")}`;
+  const Now = Floor.Solids ?? [], Seen = new Set(Now.map(Key)), Added = Planned.filter(Box => !Seen.has(Key(Box)));
+  return Added.length ? { ...Floor, Solids: [...Now, ...Added] } : Floor;
 }
 
 // The approach advice and the ready-made moves come only with a grasp the app
@@ -1396,6 +1476,32 @@ export function ReachFailureText(Failures: ReachFailure[]): string {
  * stop's headline does; without one, the detector's label. 2026-10-04 08:30:
  * "the pill bottle ... is not graspable" advised moving "the white cup".
  */
+/**
+ * Whether no straightened arm could touch the object (TaskObjectReachability's search): its footprint's nearest point
+ * toward the pan axis (its centre moved in by half its larger size) is beyond the arm's full length (AutomaticWrist
+ * BeyondArmReach, the shoulder-lift circle to the tip, straight) at every height from its base to its top.
+ */
+export function NearestBeyondArm(Object_: LocatedObject): boolean {
+  return NearestPoints(Object_).every(Point => BeyondArmReach(Point));
+}
+function NearestPoints(Object_: LocatedObject): Point3[] {
+  const Top = Object_.topZ ?? Object_.z, Half = Math.max(...(Object_.sizeCm ?? [0, 0])) / 2;
+  const Points: Point3[] = [];
+  for (let Z = Object_.z; Z <= Top + 1e-9; Z += 0.5) {
+    const At = modelPointFromDisplayPoint({ x: Object_.x, y: Object_.y, z: Z }), R = Math.hypot(At.x, At.y) || 1, In = Math.min(Half, R) / R;
+    Points.push({ x: At.x * (1 - In), y: At.y * (1 - In), z: At.z });
+  }
+  return Points;
+}
+/** The steepest wrist pitch (ReachScan) that reaches the object's nearest point at any height of it, or null. */
+function NearestPitch(Object_: LocatedObject, Context: ReachContext): number | null {
+  let Steepest: number | null = null;
+  for (const Point of NearestPoints(Object_)) {
+    const Pitch = ReachScan(Point, Context).Pitch;
+    if (Pitch != null && (Steepest == null || Pitch < Steepest)) Steepest = Pitch;
+  }
+  return Steepest;
+}
 // What a grasp's verdict is planned with besides the object (TaskObjectReachability): its neighbours, the task's word for it.
 export type ReachPlanned = { Others: LocatedObject[]; Advise?: boolean; Kind?: string | null; Label?: string | null };
 export function TaskObjectReachability(Object_: LocatedObject, Context: ReachContext, Planned?: ReachPlanned): TaskReachability {
@@ -1412,12 +1518,12 @@ export function TaskObjectReachability(Object_: LocatedObject, Context: ReachCon
     return { Kind: "ungraspable", BaseDistanceCm, GraspPitch: null, HoverPitch: null, CentrePitch: null, Plan: null, Refusal: Support.Refusal,
       Text: `NOT GRASPABLE (${Where}): ${Support.Refusal.Text}. Do not move toward it: reply ask and tell the user why` };
   }
-  if (Support.Floor.Surface) Context = { ...Context, Floor: Support.Floor };
+  if (Support.Floor.Surface || Support.Floor.Solids?.length) Context = { ...Context, Floor: Support.Floor };
   let Grasp = ReachScan(Model(GraspZ), Context);
   // A grasp whose centre the arm does not reach at mid-height may be reached higher up its side
   // (2026-09-30 19:10: the pill container BLOCKED at Z 1.3 by the basket, reached from Z 1.5):
   // planned from the pitch that reaches it there; the planner raises the grasp point (RaisedPlan).
-  if (Planned && Grasp.Pitch == null && Object_.topZ != null && !BeyondArmReach(Model(GraspZ))) {
+  if (Planned && Grasp.Pitch == null && Object_.topZ != null && (Planned.Advise !== false || !BeyondArmReach(Model(GraspZ)))) {
     for (let Raise = GraspRules.RaiseStepCm; Raise <= GraspRules.MaxRaiseCm + 1e-9 && GraspZ + Raise <= Object_.topZ - GraspRules.RaiseBelowTopCm; Raise += GraspRules.RaiseStepCm) {
       const Higher = ReachScan(Model(Tenth(GraspZ + Raise)), Context);
       if (Higher.Pitch != null) { Grasp = Higher; break; }
@@ -1431,16 +1537,26 @@ export function TaskObjectReachability(Object_: LocatedObject, Context: ReachCon
   }
   // Nor at its centre higher up: beside it across the arm's reach, where the fixed jaw goes (GraspPlan.ts PlaceAtPitch
   // starts there too), so a pose the grasp never takes does not make it BLOCKED or out of reach.
-  if (Planned && Grasp.Pitch == null && Object_.topZ != null && Object_.sizeCm && !BeyondArmReach(Model(GraspZ))) {
+  if (Planned && Grasp.Pitch == null && Object_.topZ != null && Object_.sizeCm && (Planned.Advise !== false || !BeyondArmReach(Model(GraspZ)))) {
     const At = Model(GraspZ), R = Math.hypot(At.x, At.y) || 1, Out = Math.max(...Object_.sizeCm) / 2 + GraspRules.FixedJawClearanceCm + 0.8;
     for (const Sign of [1, -1]) {
       const Beside = ReachScan({ x: At.x - Sign * Out * At.y / R, y: At.y + Sign * Out * At.x / R, z: At.z }, Context);
       if (Beside.Pitch != null) { Grasp = Beside; break; }
     }
   }
+  // GRASP ANYTHING (2026-10-22, Aaran: "I know for a fact it can grab the pill bottle. It's just like choosing not to. So
+  // loosen all restrictions like that"): a task's grasp (Planned, not the advice's probes) goes to the planner's own search
+  // even where no pitch reaches the object's centre, raised, lowered or beside it: the planner's IK with the real joint
+  // limits, at every pitch and height, decides. Only an object that no straightened arm could touch (NearestBeyondArm: its
+  // footprint's nearest point beyond the arm's full length at every height of it) is out of reach without that search.
+  // (The pill bottle of 2026-10-22 14:54 was refused here, before any search; the search agrees: out of reach.)
+  const Search = !!Planned && Planned.Advise !== false && Grasp.Pitch == null && Object_.topZ != null && !!Object_.sizeCm && !NearestBeyondArm(Object_);
+  // From the steepest pitch that reaches its nearest point, else from straight down (the planner tries every pitch to level).
+  const SearchPitch = Search ? NearestPitch(Object_, Context) ?? ReachPitches[0]! : null;
+  let Searched: GraspRefusal | null = null;
   // A grasp (Planned): the fixed jaw goes beside the object (GraspPlan.ts),
   // planned from the pitch that reaches its centre; the neighbours are Others.
-  if (Planned && (Grasp.Pitch != null || (Context.Floor?.Scene && Context.Floor.Surface?.Kind === "shelf"))) {
+  if (Planned && (Grasp.Pitch != null || Search || (Context.Floor?.Scene && Context.Floor.Surface?.Kind === "shelf"))) {
     // Refused with the pad at a gap off the default (the user's grasp gap): where another gap may plan it, the refusal says which (GraspGapHint).
     const Gap = (Refusal: GraspRefusal): GraspRefusal => {
       const Hint = GraspGapHint(Refusal);
@@ -1454,12 +1570,16 @@ export function TaskObjectReachability(Object_: LocatedObject, Context: ReachCon
     if (!Measured) return Refused(UnmeasuredRefusal(Label));
     const Box = { ...Measured, Label };
     // Neighbours as the guard holds them: a round one at its widest; a raised surface it stands on too (FloorPrism).
-    const Others = [...Planned.Others.map(Other => GraspPrism(Other)), ...(Context.Floor?.Scene ? ScenePrisms(Context.Floor) : [FloorPrism(Context.Floor)])].filter((Other): Other is Prism => Other !== null);
-    const Result = PlanGrasp(Box, Grasp.Pitch ?? 0, { ...Context, Others, Scan: Point => ReachScan(Point, Context).Pitch }, Planned.Advise !== false);
-    if (!Result.Plan) return Refused(Result.Refusal);
+    const Others = [...Planned.Others.map(Other => GraspPrism(Other)), ...ScenePrisms(Context.Floor), ...(Context.Floor?.Scene ? [] : [FloorPrism(Context.Floor)])].filter((Other): Other is Prism => Other !== null);
+    const Result = PlanGrasp(Box, Grasp.Pitch ?? SearchPitch ?? 0, { ...Context, Others, Scan: Point => ReachScan(Point, Context).Pitch }, Planned.Advise !== false);
+    // Searched where the reach scan found nothing, and nothing the arm reaches: out of reach, as before, with what the search found.
+    if (!Result.Plan && Grasp.Pitch == null && Search && Result.Refusal.Code === "reach") Searched = Result.Refusal;
+    else if (!Result.Plan) return Refused(Result.Refusal);
     const Plan = Result.Plan;
-    return { Kind: "graspable", BaseDistanceCm, GraspPitch: Plan.Pitch, HoverPitch: Plan.HoverPitch, CentrePitch: Grasp.Pitch, Plan, Refusal: null,
-      Text: GraspableText(Plan, BaseDistanceCm) };
+    if (Plan) {
+      return { Kind: "graspable", BaseDistanceCm, GraspPitch: Plan.Pitch, HoverPitch: Plan.HoverPitch, CentrePitch: Grasp.Pitch, Plan, Refusal: null,
+        Text: GraspableText(Plan, BaseDistanceCm) };
+    }
   }
   if (Grasp.Pitch != null) {
     // The descent keeps the hover's wrist when the grasp pitch reaches the hover too.
@@ -1476,7 +1596,10 @@ export function TaskObjectReachability(Object_: LocatedObject, Context: ReachCon
     return { Kind: "blocked", BaseDistanceCm, GraspPitch: null, HoverPitch: null,
       Text: `grasp height Z ${GraspZ.toFixed(1)} BLOCKED (${Where}${Steepest}): ${ReachFailureText(Grasp.Failures)}` };
   }
-  const OutOfReach = `OUT OF REACH (${Where}; the closest pose misses by ${Grasp.BestMiss.toFixed(1)} cm)`;
+  // (What the search tried, not that no grasp is possible: its grasp points go through the object's middle along the arm's
+  // reach, or beside it across, never toward the arm along a long one: a 14 cm stick centred at 46 cm, its near end at 39.)
+  const SearchedText = Searched ? `; the grasp search, its grasp point through the middle of it or beside it, found none either: ${Searched.Text.replace(/^no grasp is physically possible from here: /, "")}` : "";
+  const OutOfReach = `OUT OF REACH (${Where}; the closest pose misses by ${Grasp.BestMiss.toFixed(1)} cm${SearchedText})`;
   // A grasp: how much closer the app would plan it, so the user is told where to put it.
   const Spot = Planned && Planned.Advise !== false ? CloserToGrasp(Object_, Context, Planned.Others, Grasp.BestMiss, Planned.Kind ?? null) : null;
   if (Spot) {
@@ -1489,7 +1612,7 @@ export function TaskObjectReachability(Object_: LocatedObject, Context: ReachCon
 }
 
 // The reach verdict of a GRASP PLAN, as the model reads it.
-const GraspableText = (Plan: GraspPlan, BaseDistanceCm: number) => `graspable${Plan.Warnings?.length ? " (best effort: the app is not sure it holds)" : ""}: GRASP POINT ${PlanPoint(Plan.Grasp)} with wrist ${Deg(Plan.Pitch)} deg; `
+const GraspableText = (Plan: GraspPlan, BaseDistanceCm: number) => `graspable${Plan.Warnings?.length ? " (best effort: the app is not sure it holds)" : ""}${Plan.Caveats?.length ? ` (${Plan.Caveats.join("; ")})` : ""}: GRASP POINT ${PlanPoint(Plan.Grasp)} with wrist ${Deg(Plan.Pitch)} deg; `
   + `HOVER POINT ${PlanPoint(Plan.Hover)} with wrist ${Deg(Plan.HoverPitch)} deg (${BaseDistanceCm.toFixed(1)} cm from the right arm's pan axis)`;
 
 /**

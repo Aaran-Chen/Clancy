@@ -95,6 +95,8 @@ const Reach = (Object_, Others = [], Servos = Home) => Api.TaskObjectReachabilit
 // written. Since 2026-10-04 ("just let it try unless your code is totally sure it can't grab it") what only predicts a
 // failed grip is planned anyway, warned (TestGraspReachRefusal.mjs).
 const Strictly = Make => { const Saved = Rules.BestEffort; Rules.BestEffort = false; try { return Make(); } finally { Rules.BestEffort = Saved; } };
+// With the fixed jaw's extra standoff (GraspRules.FixedJawExtraStandoffCm) set to Cm: 0, the gap as before 2026-10-25.
+const WithExtra = (Cm, Make) => { const Saved = Rules.FixedJawExtraStandoffCm; Rules.FixedJawExtraStandoffCm = Cm; try { return Make(); } finally { Rules.FixedJawExtraStandoffCm = Saved; } };
 const Planned = [['usb', Usb], ['eraser [2,5]', Eraser25], ['eraser 1.2', Eraser12], ['pen', Pen], ...Boxes.map(Box => [`box at (${Box.x}, ${Box.y})`, Box]),
   ['stick', Stick], ['tape', Tape]];
 // Plans are deterministic: each object is planned once.
@@ -164,10 +166,13 @@ Test('the fixed jaw goes beside the object, never over it: c outside its padded 
     const Uh = Plan.JawAxis, Vh = { x: -Uh.y, y: Uh.x };
     const Across = Prism.Footprint.map(P => Dot(P, Vh)), Cv = (Math.min(...Across) + Math.max(...Across)) / 2;
     const Near = Math.min(...Band(Prism.Footprint, Vh, Cv - Rules.FingerBandHalfCm, Cv + Rules.FingerBandHalfCm).map(P => Dot(P, Uh)));
-    Assert.ok(Near - Dot(Plan.Grasp, Uh) >= Rules.FixedJawClearanceCm - 0.08, `${Name}: pad plane ${(Near - Dot(Plan.Grasp, Uh)).toFixed(3)} cm outside`);
-    Assert.ok(Math.abs(Dot(Plan.Grasp, Vh) - Cv) <= 0.08, `${Name}: ${(Dot(Plan.Grasp, Vh) - Cv).toFixed(3)} cm off the band's centre`);
-    // A fixed point: the formula at the unrounded T gives T again.
-    const Placed = Api.PlaceAtPitch(Prism, Plan.Pitch, Context());
+    Assert.ok(Near - Dot(Plan.Grasp, Uh) >= Api.PlanClearanceCm(Plan) - 0.08, `${Name}: pad plane ${(Near - Dot(Plan.Grasp, Uh)).toFixed(3)} cm outside`);
+    // (A sweep plan's head start along the fingers, Closing.DepthOffsetCm, moves it across the band: along u only, below.)
+    const Swept = Plan.Closing.Mode === 'sweep';
+    if (!Swept) Assert.ok(Math.abs(Dot(Plan.Grasp, Vh) - Cv) <= 0.08, `${Name}: ${(Dot(Plan.Grasp, Vh) - Cv).toFixed(3)} cm off the band's centre`);
+    // A fixed point: the formula at the unrounded T gives T again. (Placed with the fixed jaw's extra standoff the plan was
+    // made with, GraspRules.FixedJawExtraStandoffCm or the smaller one the object fitted: c is the plan's ClearanceCm.)
+    const Placed = Api.PlaceAtPitch(Prism, Plan.Pitch, { ...Context(), ExtraStandoffCm: Plan.ExtraStandoffCm ?? 0 }, Plan.Closing.Mode === 'sweep');
     Assert.ok(Placed.Ok, Name);
     const Frame = Api.JawFrame({ ...Api.solveIkPreview(Model(Placed.T, Plan.Pitch), 'up', Home).angles, gripper: OpenDeg });
     const N = Math.hypot(Frame.U.x, Frame.U.y), U2 = { x: Frame.U.x / N, y: Frame.U.y / N }, V2 = { x: -U2.y, y: U2.x };
@@ -176,9 +181,12 @@ Test('the fixed jaw goes beside the object, never over it: c outside its padded 
     const ToolU = Dot(Frame.Tool, U2);
     const Delta = Math.max(0, ...Api.GripperSamples({ ...Api.solveIkPreview(Model(Placed.T, Plan.Pitch), 'up', Home).angles, gripper: OpenDeg }, [])
       .filter(S => S.Part === 'FixedFinger' && S.P.z >= Prism.BaseZ - 0.5 && S.P.z <= Prism.TopZ + 0.5).map(S => Dot(S.P, U2) - ToolU));
-    const Along = Near2 - Rules.FixedJawClearanceCm - Delta;
-    const Again = { x: Along * U2.x + Cv2 * V2.x, y: Along * U2.y + Cv2 * V2.y };
-    Assert.ok(Math.hypot(Again.x - Placed.T.x, Again.y - Placed.T.y) < 0.02, `${Name}: one more iteration moves T ${Math.hypot(Again.x - Placed.T.x, Again.y - Placed.T.y).toFixed(3)} cm`);
+    const Along = Near2 - Api.PlanClearanceCm(Plan) - Delta;
+    // (A sweep plan's head start: out along the level part of the approach a, DepthOffsetCm of it along the fingers.)
+    const Level = Math.hypot(Frame.A.x, Frame.A.y), Head = Swept ? (Placed.Info.DepthOffsetCm ?? 0) / Level / Level : 0;
+    const Again = { x: Along * U2.x + Cv2 * V2.x + Head * Frame.A.x, y: Along * U2.y + Cv2 * V2.y + Head * Frame.A.y };
+    const Moves = Swept ? Math.abs(Dot(Again, U2) - Dot(Placed.T, U2)) : Math.hypot(Again.x - Placed.T.x, Again.y - Placed.T.y);
+    Assert.ok(Moves < 0.02, `${Name}: one more iteration moves T ${Moves.toFixed(3)} cm`);
     Assert.ok(Math.hypot(Placed.T.x - Plan.Grasp.x, Placed.T.y - Plan.Grasp.y) <= 0.08, `${Name}: printed ${JSON.stringify(Plan.Grasp)}`);
   }
 });
@@ -882,7 +890,8 @@ Test('narrowing the gripper to a plan\'s fraction is not a close, and the steps,
   // A standing 4 x 2 x 8 box: planned 60% open. Walk the NEXT STEPs through the validator (grasp state and guard
   // as App.tsx builds them), from Home 80% open.
   const Box = Obj('box', -5, 33, -2.3, 5.7, [4, 2]);
-  const Reach_ = Reach(Box), Plan = Reach_.Plan, Task = State(Box, Reach_);
+  // (With the fixed jaw's gap as before: with GraspRules.FixedJawExtraStandoffCm the plan is 2.54 cm farther out at wrist -18, 80% open.)
+  const Reach_ = WithExtra(0, () => Reach(Box)), Plan = Reach_.Plan, Task = State(Box, Reach_);
   Assert.ok(Plan && Plan.OpenFraction < 0.8, Reach_.Text);
   const Reply = Motion => JSON.stringify({ response_to_user: 'x', task_status: 'continue', motion_proposal: Motion });
   const Anchor = Servos => ({ ...Api.forwardKinematics(Api.currentAngles(Servos)).at(-1), wristPitch: Api.wristPitchFromAngles(Api.currentAngles(Servos)) });
@@ -1099,7 +1108,8 @@ Test('the printed points keep the snap\'s extra basket clearance, so the bridge\
 
 Test('the preferred wrist pitch (-60 deg, steep so the camera sees the object): planned there when every check passes, else at the nearest pitch that passes, equally near the steeper; not the steepest', () => {
   Assert.equal(Rules.PreferredPitchDeg, -60);
-  const Before = Make => { const Saved = Rules.PreferredPitchDeg; Rules.PreferredPitchDeg = null; try { return Make(); } finally { Rules.PreferredPitchDeg = Saved; } };
+  // (Before: the steepest-first order of 2026-10-02, with the fixed jaw's gap of then too: no extra standoff.)
+  const Before = Make => { const Saved = Rules.PreferredPitchDeg; Rules.PreferredPitchDeg = null; try { return WithExtra(0, Make); } finally { Rules.PreferredPitchDeg = Saved; } };
   // Near the arm (the centre reached at -68 to -74): -60, where the steepest-first order planned them at -66 to -73.
   for (const [Name, Object_, Old] of [['eraser 1.2', Eraser12, -66], ['pen', Pen, -66.4], ['box at (-10, 32)', Obj('box', -10, 32, -2.3, -0.3, [2, 2]), -72.6]]) {
     Assert.equal(Reach(Object_).Plan.Pitch, -60, Name);
@@ -1111,7 +1121,11 @@ Test('the preferred wrist pitch (-60 deg, steep so the camera sees the object): 
   Assert.equal(Reach(Obj('box', -15, 30, -2.3, -0.3, [2, 2])).Plan.Pitch, -60);
   const ByBasket = Obj('box', -17.5, 27, -2.3, -0.3, [2, 2]), Prism = Api.GraspPrism(ByBasket);
   Assert.equal(Reach(ByBasket).Plan.Pitch, -67);
-  for (const Pitch of [-60, -57.5]) Assert.match(Api.PlaceAtPitch(Prism, Pitch, Context()).Why, /gripper link could contact the basket/);
+  // (Placed with the fixed jaw's gap as before, GraspRules.FixedJawExtraStandoffCm 0: the jaw table's plan there sets the wrist;
+  // with the full 2.54 cm no wrist plans it by the strict closing, and at -67 it then fits 2 cm more by the jaw-plane sweep.)
+  const ByBasketPlan = Reach(ByBasket).Plan;
+  Assert.deepEqual([ByBasketPlan.ExtraStandoffCm, ByBasketPlan.Closing.Mode], [2, 'sweep']);
+  for (const Pitch of [-60, -57.5]) Assert.match(Api.PlaceAtPitch(Prism, Pitch, { ...Context(), ExtraStandoffCm: 0 }).Why, /gripper link could contact the basket/);
   Assert.equal(Before(() => Reach(ByBasket).Plan.Pitch), -89.5);
   // Farther out the arm reaches only flatter: the steepest it reaches, as before (the box at (0, 40): -17.9).
   Assert.equal(Reach(Obj('box', 0, 40, -2.3, -0.3, [2, 2])).Plan.Pitch, -17.9);
@@ -1126,7 +1140,8 @@ Test('reach: 5 cm closer the can is planned; 46 cm out it is OUT OF REACH with t
   const Far = Reach(CanAt(46));
   Assert.equal(Far.Kind, 'out-of-reach', Far.Text);
   Assert.ok(Number.isInteger(Far.CloserCm) && Far.CloserCm >= 1 && Far.CloserCm <= 6, JSON.stringify(Far.CloserCm));
-  Assert.match(Far.Text, new RegExp(`^OUT OF REACH \\(46\\.0 cm from the right arm's pan axis; the closest pose misses by \\d\\.\\d cm\\); about ${Far.CloserCm} cm closer to the arm \\(its centre about ${46 - Far.CloserCm} cm from the pan axis\\) the app plans the grasp$`));
+  // (Since 2026-10-22 the planner's own search runs before it is called out of reach, and the verdict says what it found.)
+  Assert.match(Far.Text, new RegExp(`^OUT OF REACH \\(46\\.0 cm from the right arm's pan axis; the closest pose misses by \\d\\.\\d cm; the grasp search, its grasp point through the middle of it or beside it, found none either: every wrist pitch and grasp height tried .*the arm does not reach a grasp point beside it at wrist [^;]*\\); about ${Far.CloserCm} cm closer to the arm \\(its centre about ${46 - Far.CloserCm} cm from the pan axis\\) the app plans the grasp$`));
   Assert.equal(Far.Advice, `Move the can about ${Far.CloserCm} cm closer to the right arm (straight toward its shoulder), then send the task again.`);
   Assert.equal(Reach(CanAt(46 - Far.CloserCm)).Kind, 'graspable', 'planned where the advice puts it');
   // (A cm short of it may plan too since the deep grasp, 2026-10-04: a head start the arm does not reach is shortened to one it
@@ -1329,9 +1344,10 @@ const Around0755 = [Obj('tape', 1.41, 30.28, -2.39, 2.45, [7.7, 4.9], { supportZ
 // from the 15:07 run), the straddle and the preferred wrist pitch (2026-10-03): this replay tests the steps on the poses
 // recorded around that plan.
 const AsLive = Make => {
-  const Saved = [Rules.FixedFingerOffsetCm, Rules.GraspSagCm, Rules.StrictClosing, Rules.StraddleRoundObjects, Rules.PreferredPitchDeg, Rules.BestEffort, Rules.DeepGrasp];
-  Object.assign(Rules, { FixedFingerOffsetCm: 0, GraspSagCm: 0, StrictClosing: false, StraddleRoundObjects: false, PreferredPitchDeg: null, BestEffort: false, DeepGrasp: false });
-  try { return Make(); } finally { [Rules.FixedFingerOffsetCm, Rules.GraspSagCm, Rules.StrictClosing, Rules.StraddleRoundObjects, Rules.PreferredPitchDeg, Rules.BestEffort, Rules.DeepGrasp] = Saved; }
+  // (And no extra standoff for the fixed jaw, GraspRules.FixedJawExtraStandoffCm, 2026-10-25.)
+  const Saved = [Rules.FixedFingerOffsetCm, Rules.GraspSagCm, Rules.StrictClosing, Rules.StraddleRoundObjects, Rules.PreferredPitchDeg, Rules.BestEffort, Rules.DeepGrasp, Rules.FixedJawExtraStandoffCm];
+  Object.assign(Rules, { FixedFingerOffsetCm: 0, GraspSagCm: 0, StrictClosing: false, StraddleRoundObjects: false, PreferredPitchDeg: null, BestEffort: false, DeepGrasp: false, FixedJawExtraStandoffCm: 0 });
+  try { return Make(); } finally { [Rules.FixedFingerOffsetCm, Rules.GraspSagCm, Rules.StrictClosing, Rules.StraddleRoundObjects, Rules.PreferredPitchDeg, Rules.BestEffort, Rules.DeepGrasp, Rules.FixedJawExtraStandoffCm] = Saved; }
 };
 const Reach0755 = AsLive(() => Api.TaskObjectReachability(Can0755, { Servos: S0755, ElbowMode: 'down' }, { Others: Around0755 }));
 const Plan0755 = Reach0755.Plan;
@@ -1465,7 +1481,9 @@ Test('2026-10-01 07:59: a can read 5.3 x 7.7 (the tape roll in front measured wi
   Assert.deepEqual(Plan.Closing.DiameterCm, [5.3, 6.8]);
   // The model is told why it is planned narrower than it measured.
   const Line = Api.TaskObjectLine(State(Can, Reach_), TipOf(S0800), { GripperFraction: 0.04, Closed: false });
-  Assert.match(Line, /1\.0 cm outside its left-near side \(it measured 5\.3 x 7\.7 cm, wider than a drink can: something beside it was measured with it, so it is planned as a 6\.8 cm can where its top was measured\), NOT over its centre/);
+  // (0.5 cm of the fixed jaw's extra standoff fits it, GraspRules.FixedJawExtraStandoffCm: the strict grip holds there at its wrist, not farther out.)
+  Assert.deepEqual([Plan.ExtraStandoffCm, Plan.ClearanceCm], [0.5, 1.5]);
+  Assert.match(Line, /1\.5 cm outside its left-near side \(it measured 5\.3 x 7\.7 cm, wider than a drink can: something beside it was measured with it, so it is planned as a 6\.8 cm can where its top was measured\), NOT over its centre/);
   // A detector label without the word: the task's own word plans it as a can; without one it is a cylinder as measured.
   const Cylinder = [{ ...Can, label: 'cylinder' }, ...Frame0759.slice(1)];
   const AsCan = Api.TaskObjectReachability(Cylinder[0], { Servos: S0800, ElbowMode: 'down' }, { Others: Api.NeighbourObjects(Cylinder, Cylinder[0]), Kind: 'can' });
@@ -1571,9 +1589,11 @@ Test('the grasp gap below the default moves only a round object\'s plan: anythin
   // box at (-4, 32) was refused at the default and planned at 0.5 to 0.9 with the CAD fixed finger 0.5 cm from it.
   // The review's probe: the arm at the 18:53 Home raws, the box asked for as a box.
   const Home1853 = Snapshot({ shoulder_pan: 3479, shoulder_lift: 3172, elbow_flex: 2688, wrist_flex: 856, wrist_roll: 1521, gripper: 694 });
-  const At = (Object_, Cm) => Api.TaskObjectReachability(Object_, { ...Context(), ClearanceCm: Cm }, { Others: [] });
+  // (The setting alone: no extra standoff for the fixed jaw, GraspRules.FixedJawExtraStandoffCm. With it the 2.5 x 2.0 box
+  // below is planned with the jaw-plane sweep 2.54 cm farther out, and the usb drive at the setting's gap, nothing more fitting.)
+  const At = (Object_, Cm) => WithExtra(0, () => Api.TaskObjectReachability(Object_, { ...Context(), ClearanceCm: Cm }, { Others: [] }));
   // (The strict passes' verdicts: the best-effort pass plans the box anyway, its warnings not about the gap.)
-  const AtBox = (Object_, Cm) => Strictly(() => Api.TaskObjectReachability(Object_, { Servos: Home1853, ElbowMode: 'up', ClearanceCm: Cm }, { Others: [], Kind: 'box' }));
+  const AtBox = (Object_, Cm) => WithExtra(0, () => Strictly(() => Api.TaskObjectReachability(Object_, { Servos: Home1853, ElbowMode: 'up', ClearanceCm: Cm }, { Others: [], Kind: 'box' })));
   const Box = Obj('box', -4, 32, -2.1, 5.0, [2.5, 2.0], { validFraction: 0.95 });
   const Default = AtBox(Box, 1.0);
   Assert.equal(Default.Refusal?.Code, 'wide', Default.Text);
@@ -1610,4 +1630,69 @@ Test('the grasp gap below the default moves only a round object\'s plan: anythin
     Api.ClearanceFor({ ClearanceCm: 1.4 }, false), Api.ClearanceFor({}, false)], [1, 0.6, 1.4, 1]);
   const Corrections = Api.RealArmCorrections(Api.GraspPrism(Can2), true);
   Assert.deepEqual([Corrections.On, Corrections.OffsetCm, Corrections.SagCm], [true, Rules.FixedFingerOffsetCm, Rules.GraspSagCm]);
+});
+
+// THE FIXED JAW'S EXTRA STANDOFF (GraspRules.FixedJawExtraStandoffCm, 2026-10-25, Aaran: the fixed jaw comes down a little
+// too close to the object, "preferably 1 inch" farther). The fixed finger's inner face at the printed grasp pose: how far it
+// stands from the object's near face (the footprint across the finger's band) along the jaws' closing direction u.
+function FixedFaceGap(Plan) {
+  const Uh = Plan.JawAxis, Vh = { x: -Uh.y, y: Uh.x }, Prism = Plan.Prism;
+  const Across = Prism.Footprint.map(P => Dot(P, Vh)), Cv = (Math.min(...Across) + Math.max(...Across)) / 2;
+  const Near = Math.min(...Band(Prism.Footprint, Vh, Cv - Rules.FingerBandHalfCm, Cv + Rules.FingerBandHalfCm).map(P => Dot(P, Uh)));
+  const Finger = Api.GripperSamples(Plan.Poses.Grasp, []).filter(S => S.Part === 'FixedFinger' && S.P.z >= Prism.BaseZ - 0.5 && S.P.z <= Prism.TopZ + 0.5);
+  return Near - Math.max(...Finger.map(S => Dot(S.P, Uh)));
+}
+
+Test('the fixed jaw stands the grasp gap + 2.54 cm from the object along the closing direction, whatever the approach', () => {
+  Assert.equal(Rules.FixedJawExtraStandoffCm, 2.54);
+  // A 3.5 cm cup ahead and to the left of the arm (wrist -31) and one farther out to the right (wrist -13): the jaws'
+  // closing directions -u (0.79, -0.61) and (0.92, -0.38), the fixed jaw on the +X side of each.
+  const Cases = [['cup', Obj('cup', 8, 32, -2.3, 6, [3.5, 3.0])], ['far cup', Obj('cup', -2, 38, -2.3, 6, [3.5, 3.0])]];
+  const Axes = [];
+  for (const [Name, Object_] of Cases) {
+    const Before = WithExtra(0, () => Reach(Object_)).Plan, After = Reach(Object_).Plan;
+    Assert.ok(Before && After, Name);
+    Assert.deepEqual([Before.ExtraStandoffCm, Before.ClearanceCm, After.ExtraStandoffCm, After.ClearanceCm], [undefined, 1, 2.54, 3.54], Name);
+    Assert.equal(After.Warnings, undefined, `${Name}: planned with every check`);
+    const [Was, Now_] = [FixedFaceGap(Before), FixedFaceGap(After)];
+    // (The finger's samples cover its surface within ContactMarginCm; a round object's disc is planned at its widest.)
+    Assert.ok(Was >= 1 - 0.08 && Was <= 1 + 0.2, `${Name}: before ${Was.toFixed(2)} cm`);
+    Assert.ok(Now_ >= 3.54 - 0.08 && Now_ <= 3.54 + 0.2, `${Name}: after ${Now_.toFixed(2)} cm`);
+    Assert.ok(Math.abs(Now_ - Was - 2.54) <= 0.15, `${Name}: ${(Now_ - Was).toFixed(2)} cm farther`);
+    // Away from the object: the fixed jaw is on the -u side of it (u points from the fixed pad into the gap).
+    Assert.ok(Dot(After.Grasp, After.JawAxis) < Dot(After.Prism.Centre, After.JawAxis) - 3.54, Name);
+    Axes.push([After.JawAxis, After.Pitch]);
+  }
+  Assert.ok(Math.acos(Dot(Axes[0][0], Axes[1][0])) * 180 / Math.PI > 10 && Math.abs(Axes[0][1] - Axes[1][1]) > 10, 'two approach directions');
+  // The model is told the gap and why it is wider.
+  const Cup = Reach(Cases[0][1]);
+  const Line = Api.TaskObjectLine(State(Cases[0][1], Cup), { x: -13.3, y: 20.1, z: 12.4 }, { GripperFraction: 0.8, Closed: false });
+  Assert.match(Line, /the tip goes BESIDE the cup, 3\.5 cm outside its left-near side[^\n]* That 3\.5 cm is the 1\.0 cm grasp gap the user set for the fixed jaw plus 2\.5 cm more the app keeps the fixed jaw from it/);
+});
+
+Test('an object that does not fit with the full 2.54 cm falls back to the largest smaller extra that plans, down to the old gap', () => {
+  // The pen (1 cm across, planned with the jaw table): 2.54 cm or 2 cm more and the moving jaw would close more than the 5 cm
+  // it meets the side of; 1.5 cm more fits (W_eff 4.9 cm), at the wrist the old gap planned it at.
+  const Pen_ = Reach(Pen).Plan, PenBefore = WithExtra(0, () => Reach(Pen)).Plan;
+  Assert.deepEqual([Pen_.ExtraStandoffCm, Pen_.ClearanceCm, Pen_.Closing.Mode, Pen_.Warnings, Pen_.Pitch], [1.5, 2.5, 'table', undefined, PenBefore.Pitch]);
+  Assert.ok(Pen_.WidthEffCm <= 5.0 && Pen_.WidthEffCm + 0.5 > 5.0, `${Pen_.WidthEffCm}`);
+  Assert.ok(Math.abs(FixedFaceGap(Pen_) - 2.5) <= 0.1 && Math.abs(FixedFaceGap(Pen_) - FixedFaceGap(PenBefore) - 1.5) <= 0.15,
+    `${FixedFaceGap(Pen_)} - ${FixedFaceGap(PenBefore)}`);
+  // A 2 cm box the old gap planned with the jaw table: 1.5 cm more with the jaw-plane sweep there, 50% open.
+  const Box = Obj('box', -10, 32, -2.3, -0.3, [2, 2]), Swept = Reach(Box).Plan;
+  Assert.deepEqual([Swept.ExtraStandoffCm, Swept.Closing.Mode, Swept.OpenFraction, Swept.Pitch, Swept.Warnings], [1.5, 'sweep', 0.5, -60, undefined]);
+  Assert.ok(Math.abs(FixedFaceGap(Swept) - 2.5) <= 0.2, `${FixedFaceGap(Swept)}`);
+  // A plan whose grip holds by the strict closing with less beats one that holds only by the old closing with more: the can
+  // at 16:49's spot keeps the old gap (with 1.5 cm more the old closing planned it at wrist -9, pushed 2.7 cm along the
+  // fingers and left 0.2 cm inside the fixed finger's tip: the close that squeezed it out on 2026-10-01).
+  const Can = Reach(Can2).Plan;
+  Assert.deepEqual([Can.ExtraStandoffCm, Can.ClearanceCm, Can.Pitch], [undefined, 1, WithExtra(0, () => Reach(Can2)).Plan.Pitch]);
+  Assert.ok(Can.Closing.TipCm >= Rules.FingertipMarginCm, `${Can.Closing.TipCm}`);
+  // Nothing more fits the usb drive: planned at the old gap, as before, never refused for the standoff.
+  Assert.deepEqual([UsbPlan.ExtraStandoffCm, UsbPlan.ClearanceCm, UsbPlan.Grasp], [undefined, 1, WithExtra(0, () => Reach(Usb)).Plan.Grasp]);
+  Assert.ok(Math.abs(FixedFaceGap(UsbPlan) - 1) <= 0.08, `${FixedFaceGap(UsbPlan)}`);
+  // Half an inch: the pen fits it all.
+  const Half = WithExtra(1.27, () => Reach(Pen)).Plan;
+  Assert.deepEqual([Half.ExtraStandoffCm, Half.ClearanceCm], [1.27, 2.27]);
+  Assert.ok(Math.abs(FixedFaceGap(Half) - 2.27) <= 0.1, `${FixedFaceGap(Half)}`);
 });

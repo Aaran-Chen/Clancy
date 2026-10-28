@@ -91,6 +91,24 @@ UndeclaredBelowCm = 1.0
 # A surface is level points covering an area: on a 1 cm grid, at least this many cells inside it.
 LevelCellCm = 1.0
 LevelMinInteriorCells = 4
+# With no calibrated desk in view a measured support need not surround the object's footprint: books, a wall or a
+# neighbour standing against it hide the support on that side (the pill bottle on the bookshelf cabinet of 2026-10-25,
+# the cabinet top at Z 3.3 reaching Y 42.38 behind it, its footprint 42.45). It is enough that the level patch is
+# measured right beside the footprint (within SupportSideBandCm outside it, or SupportSideInsideCm under its edge) on at
+# least SupportMinSides of its four sides, each side's band holding SupportSideMinPoints of the patch over
+# SupportSideCover of that side's length (in SupportSideBinCm bins) and SupportSideDepthCm outward (an area; the surface
+# seen inside the box counts from SupportSideClearCm outside the footprint, never the object's own side), and that the
+# object reaches down to it: the lowest 5% of its points within SupportBaseGapCm of the surface (otherwise it floats, is
+# held up, or its base is hidden). At a calibrated desk the patch must still lie around the whole footprint.
+SupportSideBandCm = 2.0
+SupportSideInsideCm = 0.5
+SupportSideMinPoints = 25
+SupportSideCover = 0.5
+SupportSideBinCm = 0.5
+SupportSideDepthCm = 1.0
+SupportSideClearCm = 0.5
+SupportMinSides = 2
+SupportBaseGapCm = 1.5
 
 # Depth-aware camera fit noise model. Pixels are the tape centroid; depth adds
 # stereo noise that grows with distance.
@@ -559,6 +577,12 @@ def _MeasureOn(World, Valid, Crop, Ring, Branch: str, Prior, Surfaces, Surface: 
     if Branch == "surface" and not Surface and _CutsThrough(Component, Valid, Above):
         Outcome["error"] = "the surface found cuts through the object: the object goes on below it"
         return Outcome
+    if (Branch == "surface" and not Surface and Surfaces is not None and not DeskSupport(Surfaces)
+            and float(np.percentile(Rises, 5)) > SupportBaseGapCm):
+        # No desk (SupportSides): the object must reach down to the surface that holds it.
+        Outcome["error"] = (f"the object's lowest points are {float(np.percentile(Rises, 5)):.1f} cm above the surface measured under it: "
+                            "it does not stand on it, or its base is hidden")
+        return Outcome
     Rise = float(np.percentile(Rises, 95))
     Base = float(Prior(ContactX, ContactY)) + (Local or 0.0)
     # A thicker band would take in the upper strip of the side faces the
@@ -730,9 +754,12 @@ def _SupportCandidates(World, Valid, Crop, Ring, Surfaces, Only=None) -> list[di
             continue
         Level = float(np.median(Patch[:, 2]))
         Outcome = _MeasureOn(World, Valid, Crop, Ring, "surface", _Flat(Level), Surfaces, None, **({"Only": Only} if Only is not None else {}))
-        if not Outcome["ok"] or not _Surrounds(Patch, np.asarray(Outcome["contact_cm"])):
+        # At a desk the patch must lie around the contact and the footprint; with none, beside enough of its sides (SupportSides).
+        if not Outcome["ok"] or (OnDesk and not _Surrounds(Patch, np.asarray(Outcome["contact_cm"]))):
             continue
-        Geometry = _MeasuredSupportGeometry(Patch, Outcome)
+        # With no desk, its sides are judged on the ring and on the surface seen inside the box (beside the object).
+        Inside = None if OnDesk else World[Valid & (np.abs(World[..., 2] - Outcome["z"]) <= 0.35)]
+        Geometry = _MeasuredSupportGeometry(Patch, Outcome, Sides=not OnDesk, Inside=Inside)
         if Geometry is None:
             continue
         # A wide noisy peak may occupy adjacent histogram bins; it is one plane.
@@ -748,8 +775,41 @@ def _UndeclaredSupport(World, Valid, Crop, Ring, Surfaces, Only=None) -> dict[st
     return Found[0] if len(Found) == 1 else None
 
 
-def _MeasuredSupportGeometry(Patch, Outcome) -> dict[str, Any] | None:
-    """Observed local extent, not an extrapolated board or a claim of empty air."""
+def SupportSides(Patch, Centre, Half, Inside=None) -> list[str]:
+    """The sides of a footprint (display Centre +- Half, cm) a level patch (N x 3 display points) is measured right
+    beside: "-x", "+x", "-y" (toward the arm), "+y". A side's band reaches SupportSideBandCm out from the footprint's
+    edge and SupportSideInsideCm under it, along the side's length; it counts with SupportSideMinPoints of the patch in it
+    covering SupportSideCover of that length and SupportSideDepthCm outward (an area, not the line a wall or the object's
+    own side cuts at that height). Inside (the box's points at the surface's height) counts only from SupportSideClearCm
+    outside the footprint: nearer, the object's own side is level with any height."""
+    Centre, Half = np.asarray(Centre, dtype=np.float64), np.asarray(Half, dtype=np.float64)
+    Inside = np.empty((0, 3)) if Inside is None else np.asarray(Inside, dtype=np.float64).reshape(-1, 3)
+    Sides = []
+    for Axis, Sign, Name in ((0, -1, "-x"), (0, 1, "+x"), (1, -1, "-y"), (1, 1, "+y")):
+        Along = 1 - Axis
+        Edge = Centre[Axis] + Sign * Half[Axis]
+        Low, High = Centre[Along] - Half[Along], Centre[Along] + Half[Along]
+        Band = []
+        for Points, Nearest in ((Patch, -SupportSideInsideCm), (Inside, SupportSideClearCm)):
+            Out = Sign * (Points[:, Axis] - Edge)
+            Band.append(np.column_stack([Points[:, Along], Out])[(Out >= Nearest) & (Out <= SupportSideBandCm)
+                                                               & (Points[:, Along] >= Low) & (Points[:, Along] <= High)])
+        Band = np.vstack(Band)
+        if len(Band) < SupportSideMinPoints or float(np.percentile(Band[:, 1], 90) - np.percentile(Band[:, 1], 10)) < SupportSideDepthCm:
+            continue
+        Bins = max(1, int(math.ceil((High - Low) / SupportSideBinCm)))
+        Covered = len(np.unique(np.clip(((Band[:, 0] - Low) / SupportSideBinCm).astype(int), 0, Bins - 1)))
+        if Covered >= SupportSideCover * Bins:
+            Sides.append(Name)
+    return Sides
+
+
+def _MeasuredSupportGeometry(Patch, Outcome, Sides: bool = False, Inside=None) -> dict[str, Any] | None:
+    """Observed local extent, not an extrapolated board or a claim of empty air.
+
+    Sides (no calibrated desk in view): a patch that does not lie around the whole footprint still holds it when it is
+    measured beside SupportMinSides of its sides (SupportSides, on the patch and Inside: the surface's points inside the
+    box, display N x 3); its extent is then what it measured with the footprint."""
     Level = float(Outcome["z"])
     Patch = Patch[np.abs(Patch[:, 2] - Level) <= 0.35]
     if not _Level(Patch):
@@ -757,17 +817,27 @@ def _MeasuredSupportGeometry(Patch, Outcome) -> dict[str, Any] | None:
     Low, High = np.percentile(Patch[:, :2], 5, axis=0), np.percentile(Patch[:, :2], 95, axis=0)
     Centre = np.array([Outcome["x"], Outcome["y"]])
     Half = np.asarray(Outcome["size_cm"]) / 2
+    Beside = None
     # Both the measured footprint and its contact must be surrounded by the
     # patch. A neighbour's top beside or in front of an object is not its base.
     if np.any(Low > Centre - Half - 0.25) or np.any(High < Centre + Half + 0.25):
-        return None
+        if not Sides:
+            return None
+        # No desk: books, a wall or a neighbour against the object hide its support there (they stay solids of their
+        # own); the patch beside enough of its sides holds it, and its extent takes in the footprint it holds.
+        Beside = SupportSides(Patch, Centre, Half, Inside)
+        if len(Beside) < SupportMinSides:
+            return None
+        Low, High = np.minimum(Low, Centre - Half), np.maximum(High, Centre + Half)
     if not -20.0 <= Level <= 50.0 or np.any(High - Low < 2.0):
         return None
+    Evidence = {"points": int(len(Patch)), "height_spread_cm": round(float(np.percentile(Patch[:, 2], 95) - np.percentile(Patch[:, 2], 5)), 3)}
+    if Beside is not None:
+        Evidence["sides"] = Beside
     return {"Name": f"measured support at Z {Level:.1f}", "Kind": "platform", "Enabled": True,
             "TopZCm": Level, "XRangeCm": np.round([Low[0], High[0]], 2).tolist(),
             "YRangeCm": np.round([Low[1], High[1]], 2).tolist(), "BoardAboveZCm": None,
-            "Frame": "cart", "Source": "depth", "ObservedOnly": True,
-            "Evidence": {"points": int(len(Patch)), "height_spread_cm": round(float(np.percentile(Patch[:, 2], 95) - np.percentile(Patch[:, 2], 5)), 3)}}
+            "Frame": "cart", "Source": "depth", "ObservedOnly": True, "Evidence": Evidence}
 
 
 def LocalSupportGeometry(DepthMm, Box, Intrinsics, Model, Mirrored, Measured, Exclude=None):

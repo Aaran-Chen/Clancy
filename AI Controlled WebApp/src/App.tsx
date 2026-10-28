@@ -7,24 +7,26 @@ import { AiSnapEnabled, SnapAiTarget, SnapRules, type SnapInput, type SnapResult
 import {
   BestEffortNote, BindFromEstimate, BuildGraspGuard, CameraGateFailure, ClosedJawDescentReason, CameraMovedError, DeskRemeasuredNote, GripperClosedAfter, HeldFraction, IsUnreliable, MeasuredObjectsSummary, NextStepOf,
   NamesQuery, NoTaskObjectLine, ParseTaskObject, ReachFactsText, ReadLocateResponse, ResolveTaskObject, RobotCheckNote, TapeCorrectedReach, TaskFloor, TaskIntent, TaskNeedsPositions, TaskObjectLine, TaskObjectReachability, TaskSupport, UnreliableMeasurements,
-  WithheldTaskObject, WithheldTaskStop,
+  WithheldTaskObject, WithheldTaskStop, KeptDeskFloor, PlanSource, CloseTargetFraction,
   UnreliableTargetReason, ClosedOnNothing, NextStepReminder, NoteGripperMove, PlannedStepOf,
   type CameraGate, type GraspState, type LocateResult, type LocatedObject, type ReachContext, type ReachPlanned, type TaskClose, type TaskObjectBinding,
   type TaskObjectQuery, type TaskObjectState, type TaskReachability,
 } from "./lib/AiMeasurements";
-import { GraspGuardReason, GraspPlanKey, GripperNear, GripperSweepReason, KeepOrReplan, NeighbourObjects, NextStepRefusalLead, ObjectPrism,
+import { GraspGuardReason, GraspPlanKey, GripperNear, GripperSweepReason, WristRollTurnReason, KeepOrReplan, NeighbourObjects, NextStepRefusalLead, ObjectPrism,
   OpeningOnTheWayReason, type GraspGuard, type GraspPlan } from "./lib/GraspPlan";
 import { GraspRules, KeepMissed } from "./lib/GraspPlan";
 import {
   AiModelTimeoutMs, AiStepTimeoutError, ArmMovedDuringCaptureCm, ArmNotStillReason, ArmStillJitterRaw, ArmStillWaitMs, LocateTimeoutMs, MarkFinalTarget, RepeatsLastTarget, WithTimeout,
   BuildAiFeasibilityFeedbackPrompt, BuildTaskCheckInPrompt, ChangingServoTargets, CompactTurn, DescribeBridgeRefusal, DescribeMotionFact, MAX_AI_TASK_STEPS, NoOpFeedbackPrompt, NoOpReason,
-  NotSentFeedbackPrompt, PlannedStepNote, PlannedStepReply, SliceWholeTurns, SnapMotionNote, SnapNoOpReason,
+  NoMotionFeedbackPrompt, NoMotionTwiceReason, NotSentFeedbackPrompt, PlannedStepNote, PlannedStepReply, SliceWholeTurns, SnapMotionNote, SnapNoOpReason,
   ChainGripperStill, ChainLegInterrupted, TargetKey, TaskSettleVerdictFor, TaskStartLimitMs, TaskStopAdvice, type AiChatMessage, type FinalTargetMark, type TaskEndSource, type TaskMotionSnap, type TaskSettleWait,
 } from "./lib/AiTaskLoop";
 import type { TargetWorkspaceContext } from "./lib/TargetWorkspace";
 import type { PitchGuideSegment } from "./lib/PitchGuide";
 import { ContinueAskedTask, type AskedTask } from "./lib/TaskObject";
 import { JudgeArmOcclusion } from "./lib/ArmOcclusion";
+import { AppDoneReply, AppRunReason, AppRunStepNote, AppRunStepReply, AppStepRules, AppStepsSummary, GraspOnlyRequest, IsLiftedStep, MotionAnomaly, StepNeedsModel,
+  StepWords, WithAppStepsSummary, type AppCheckIn, type AppRunStep } from "./lib/AppPlannedSteps";
 import { WithoutArmMade, type ArmClearReadings } from "./lib/ArmMadeObjects";
 import { ChainedFraction, ChainGripperHereReason, ChainGripperKind, ChainGripperText, ChainOrderText, ChainRefusalReason, ChainRules, ChainRunsTogether, DescribeChainRun, ReadChainGripper,
   type ChainGripper, type ChainLeg, type ChainLegResult, type ChainRun } from "./lib/AiChain";
@@ -179,6 +181,11 @@ type AiMotionProposal = {
   approvalNote?: string;
   // The app's own NEXT STEP, offered after the model did not follow it (runAiRequest, PlannedStepNote).
   planned?: boolean;
+  // The app's own NEXT STEP, proposed without asking the model (lib/AppPlannedSteps.ts): what it does and its JSON.
+  // Planned is set too (the card's label); the check-in after it says the app ran it, not that the model failed.
+  appRun?: { What: string; Json: string } | null;
+  // The model's proposal is the NEXT STEP the app gave for it, as the app reads that step (SameStep): the GRASP PLAN goes on as planned.
+  followsPlan?: boolean;
 };
 type ServoSeed = Record<ServoName, { presentRaw: number; guiAngleRaw: number | null }>;
 type AiServoProposal = {
@@ -382,7 +389,7 @@ const AiSystemPromptBase = (Floor: AiFloor = DeskFloor) => [
   "The arm runs one move at a time: a motion_proposal changes either the tip (move_delta_cm or target_cm, with wrist_pitch_degrees) or ONE slider in direct_servo_targets, never both. The one exception is a CHAINED MOTION: one gripper action chained with one tip move.",
   // lib/AiChain.ts: the format, the order, and what is never chained (ChainRefusalReason).
   "CHAINED MOTION: to move the gripper and the tip with ONE motion_proposal, add \"gripper_before\" (the gripper moves first, then the tip; a gripper_before that OPENS the gripper opens it WHILE the tip moves, as one motion) or \"gripper_after\" (the tip moves first, then the gripper) beside its target_cm or move_delta_cm, with the gripper fraction (0.0 closed, 0.8 open). The human approves both at once and the app runs them in that order, the second only once the first has finished (an opening gripper_before: both at once), each checked with the gripper as it will be then; you are re-prompted after both. So \"gripper_before\":0.8 added to a target_cm move opens the gripper to 80% while the tip moves there; {\"move_delta_cm\":{\"left\":0,\"farther\":0,\"up\":6},\"gripper_before\":0.0} closes the gripper and then lifts straight up; \"gripper_after\":0.8 added to a move opens the gripper where the move ends. Never chained (the app refuses them): the descent to an object's grasp point (always its own motion, so the next image shows the open jaws beside it before the close, unless the gripper hides it there), a close after a tip move, a close followed by anything but a straight lift, and opening or narrowing the gripper beside an object below its top (not one the jaws hold: putting a held object down and letting go may be chained). A chained open goes to at most 0.8: a chained fraction above 0.8 runs to 0.8. A chained motion counts as ONE of your motions.",
-  "During a task with a task object, never change wrist_roll: the GRASP PLAN and the camera's check of the tip tape assume it stays where it is, and the app refuses it.",
+  "During a task with a task object, never change wrist_roll: the GRASP PLAN and the camera's check of the tip tape assume it stays where it is, and the app refuses it. The one exception: a NEXT STEP that gives the GRASP PLAN's wrist_roll turn; copy it exactly.",
   "GRASP SEQUENCE: open the gripper and go to the GRASP PLAN's hover point (one chained motion), descend straight down to its grasp point with the jaws open (always its own motion), then close the gripper (the moving jaw pushes the object against the fixed jaw) and lift (one chained motion: the gripper closes first, then the tip rises). You do not pick these steps: the NEXT STEP gives the one for the arm as it is now, chained or not, and repeats or corrects a step when the arm stopped off its point (the hover point aimed past it, a rise first). Never descend onto an object with the jaws closed. Report done only after lifting with the object held. To put a held object somewhere (the basket, a cup), move above that place and open the gripper there in one chained motion (\"gripper_after\":0.8 with that move) to release it, then lift.",
   "For the gripper, target_fraction 1.0 means open and target_fraction 0.0 means closed.",
   "The UI accepts one motion_proposal at a time.",
@@ -791,6 +798,8 @@ function motionRecord(motion: AiMotionProposal | null): Record<string, unknown> 
     snap: snapRecord(motion.snap ?? null),
     // The app's planned NEXT STEP, not the model's proposal.
     ...(motion.planned ? { planned: true } : {}),
+    // Proposed by the app without a model call (lib/AppPlannedSteps.ts).
+    ...(motion.appRun ? { app_run: true } : {}),
   };
 }
 
@@ -949,6 +958,17 @@ function chainTipServos(motion: AiMotionProposal, servos: Record<ServoName, Serv
 }
 
 // A proposal as the no-op rule sees it: a chain's gripper action moves a servo.
+// Whether two proposals read from the same anchor ask for the same motion: the same target and wrist (as asked, before
+// any snap), the same servo targets and the same chained gripper action. A model's copy of the NEXT STEP is that step.
+function SameStep(A: AiMotionProposal, B: AiMotionProposal) {
+  const Near = (P: TargetPose, Q: TargetPose) => Math.hypot(P.x - Q.x, P.y - Q.y, P.z - Q.z) <= 0.15;
+  const Servos = (Items: AiServoProposal[]) => Items.map(Item => `${Item.name}:${Math.round(Item.targetRaw / 5)}`).sort().join();
+  return A.hasTargetMotion === B.hasTargetMotion && (!A.hasTargetMotion || (Near(A.requestedTarget, B.requestedTarget)
+      && Math.abs(A.requestedWristPitchTarget - B.requestedWristPitchTarget) <= 0.5))
+    && Servos(A.servoTargets) === Servos(B.servoTargets)
+    && (A.chain?.Order ?? null) === (B.chain?.Order ?? null) && Math.abs((A.chain?.Fraction ?? -1) - (B.chain?.Fraction ?? -1)) <= 0.005;
+}
+
 function noOpView(motion: AiMotionProposal) {
   return { hasTargetMotion: motion.hasTargetMotion, target: motion.target,
     servoTargets: motion.chain ? [...motion.servoTargets, { name: "gripper" as ServoName, targetRaw: motion.chain.TargetRaw }] : motion.servoTargets };
@@ -1658,9 +1678,12 @@ function validateAiMotionProposal(
   } else if (Changing.length > 1) {
     issues.push(`Change one slider per motion (the arm runs one move at a time): ${Changing.map(Item => formatServoLabel(Item.name)).join(" and ")} were proposed together.`);
   }
-  // The GRASP PLAN, the guard's gripper pose and the bridge's tape check all assume the roll stays.
-  if (guard && Changing.some(Item => Item.name === "wrist_roll")) {
-    issues.push("Wrist roll is held during an object task: the GRASP PLAN and the camera's tape check assume it stays where it is. Leave wrist_roll out.");
+  // The GRASP PLAN, the guard's gripper pose and the bridge's tape check all assume the roll stays, except the GRASP PLAN's
+  // own turn (lib/GraspPlan.ts FREE WRIST ROLL), checked on its way round like any move (WristRollTurnReason).
+  const RollMove = guard ? Changing.find(Item => Item.name === "wrist_roll") : undefined;
+  if (RollMove) {
+    const Turned = WristRollTurnReason(currentAngles(servos), RollMove.targetRaw, angleFromRawValue(servos.wrist_roll, RollMove.targetRaw), guard);
+    if (Turned) issues.push(Turned);
   }
   let preview: IkPreview | null = null;
   // A CHAINED MOTION (lib/AiChain.ts): its tip move is checked with the jaws as
@@ -1991,6 +2014,15 @@ function modelHasVision(capabilities: unknown): boolean {
     && capabilities.some((c) => typeof c === "string" && c.toLowerCase() === "vision");
 }
 
+/* The CAD view (ArmCanvas) is memoised: App re-renders on every keystroke in the AI box, and a new prop each time
+   made the view redraw its whole scene per key (TestCadTypingUi). Its callbacks therefore keep one identity and
+   call the latest closure, and its empty wrist-angle guide is one shared array. */
+function UseLatestCallback<Args extends unknown[], Result>(Callback: (...Values: Args) => Result) {
+  const Latest = useRef(Callback); Latest.current = Callback;
+  return useCallback((...Values: Args) => Latest.current(...Values), []);
+}
+const NoPitchGuide: PitchGuideSegment[] = [];
+
 function App() {
   const [DisplaySettings, SetDisplaySettings] = useState(ReadViewSettings);
   const [SettingsOpen, SetSettingsOpen] = useState(false);
@@ -2175,12 +2207,19 @@ function App() {
   // commanded, so the next check-in states what it measurably did.
   // Chain: a chained motion's legs and how each went (lib/AiChain.ts), for that check-in.
   const LastTaskMotionRef = useRef<{ Step: number; StartTip: Point3; Target: Point3 | null; ServoTargets: AiServoProposal[];
-    Snap: TaskMotionSnap | null; Record: Record<string, unknown> | null; Chain?: ChainRun | null; Planned?: boolean } | null>(null);
+    Snap: TaskMotionSnap | null; Record: Record<string, unknown> | null; Chain?: ChainRun | null; Planned?: boolean; AppRun?: boolean;
+    // The GRASP PLAN's own NEXT STEP: the app's (AppRun) or the model's exact copy of it (lib/AppPlannedSteps.ts).
+    FollowsPlan?: boolean } | null>(null);
+  // The app's own steps approved since the model's last call (lib/AppPlannedSteps.ts): its next call is told of them.
+  const AppStepsSinceModelRef = useRef<AppRunStep[]>([]);
+  // How long the task's last model call took (ms): what a step the app proposes itself saves, as the record estimates it.
+  const LastModelMsRef = useRef<number | null>(null);
   // The chained motion being run: how its legs went (the check-in or the chat
   // says so), and its approved proposal, for the second leg's check.
   const ChainRunRef = useRef<ChainRun | null>(null);
   const ChainProposalRef = useRef<AiMotionProposal | null>(null);
-  const runAiRequestRef = useRef<(promptText: string) => void>(() => {});
+  // CheckIn: how the motion a check-in follows went (lib/AppPlannedSteps.ts), when one did.
+  const runAiRequestRef = useRef<(promptText: string, CheckIn?: AppCheckIn) => void>(() => {});
   // The socket handler outlives renders, so it stops tasks through this ref,
   // and hands a refusal of the approved motion to the task through the next.
   const StopTaskWithReasonRef = useRef<(Reason: string, Advice: string) => void>(() => {});
@@ -2239,6 +2278,9 @@ function App() {
   const ConfigurationRef = useRef("");
   // The motion fault the bridge has latched (its text), until Hold clears it.
   const MotionFaultRef = useRef<string | null>(null);
+  // The latched fault last recorded (its bridge event's kind, reason and time, else its text). Kept across socket
+  // closes and, in this browser, page loads: the same fault seen again is recorded seen_again, not as a new one (audit 2 M3).
+  const RecordedFaultRef = useRef<string | null>(null);
   // Each task gets an id; the last one whose end was recorded, and why it
   // ended (the task recording's reason). EndAiTask is reached from the socket
   // handler, which outlives renders, through the ref.
@@ -2326,7 +2368,7 @@ function App() {
     if (!Seen) return null;
     const Held = BridgeTargetRef.current;
     return { Object: Seen, State: { GripperFraction: rawToFraction(Servos.gripper, Servos.gripper.presentRaw), Closed: TaskGripperClosedRef.current,
-      Held: Held ? { Point: mirrorDisplayPoint(Held), Pitch: Held.wristPitch } : null },
+      Held: Held ? { Point: mirrorDisplayPoint(Held), Pitch: Held.wristPitch } : null, RollRaw: Servos.wrist_roll.presentRaw },
       Plan: TaskObjectRef.current?.Plan?.Reach.Plan ?? null };
   };
   const [captureCountdown, setCaptureCountdown] = useState<number | null>(null);
@@ -3049,11 +3091,22 @@ function App() {
           const Fault = message.motion_fault ? String(message.motion_fault) : null;
           if (Fault !== MotionFaultRef.current) {
             const Event = isRecord(message.last_bridge_event) && message.last_bridge_event.reason === Fault ? message.last_bridge_event : null;
+            if (RecordedFaultRef.current === null) {
+              try { RecordedFaultRef.current = localStorage.getItem("SO101.RecordedFault"); } catch { /* Storage optional. */ }
+            }
             if (Fault) {
-              pushLog("warn", `Bridge fault: ${Fault}`);
+              const Key = JSON.stringify(Event ? [Event.kind, Fault, Event.t] : [null, Fault]);
+              const SeenAgain = Key === RecordedFaultRef.current;
+              pushLog("warn", SeenAgain ? `Bridge fault (still latched): ${Fault}` : `Bridge fault: ${Fault}`);
               recordSessionEvent("bridge_fault", { kind: typeof Event?.kind === "string" ? Event.kind : "motion_fault", reason: Fault,
-                joint: typeof Event?.joint === "string" ? Event.joint : null, details: Event?.details ?? null });
-            } else pushLog("info", "Bridge fault cleared");
+                joint: typeof Event?.joint === "string" ? Event.joint : null, details: Event?.details ?? null, ...(SeenAgain ? { seen_again: true } : {}) });
+              RecordedFaultRef.current = Key;
+              try { localStorage.setItem("SO101.RecordedFault", Key); } catch { /* Storage optional. */ }
+            } else {
+              pushLog("info", "Bridge fault cleared");
+              RecordedFaultRef.current = "";
+              try { localStorage.removeItem("SO101.RecordedFault"); } catch { /* Storage optional. */ }
+            }
             MotionFaultRef.current = Fault;
           }
           if (Fault) {
@@ -4797,6 +4850,7 @@ function App() {
       pushLog("warn", `Bridge refused the second part of the chained motion: ${compactOutputText(Text, 110)}. Asking the AI again.`);
       ChainProposalRef.current = null;
       if (Run) Run.Why = `the bridge refused it: ${Text}`;
+      // (Its check-in reads the refusal in the chain's run: lib/AppPlannedSteps.ts MotionAnomaly.)
       TaskCheckIn();
       return;
     }
@@ -4815,11 +4869,14 @@ function App() {
     AiSettleWaitRef.current = null;
     setAiSettleWait(null);
     TaskMotionsRef.current = TaskMotionsRef.current.slice(0, -1);
+    // An app's step the bridge refused did not run (lib/AppPlannedSteps.ts).
+    AppStepsSinceModelRef.current = AppStepsSinceModelRef.current.filter(Step => Step.Step !== Motion.Step);
     LastTaskMotionRef.current = null;
     ChainRunRef.current = null;
     ChainProposalRef.current = null;
     runAiRequestRef.current(BuildTaskCheckInPrompt(Rewound, TaskMotionsRef.current,
-      DescribeBridgeRefusal(Motion.Step, Text, Motion.Snap, Motion.Chain ? DescribeChainRun(Motion.Chain) : null)));
+      DescribeBridgeRefusal(Motion.Step, Text, Motion.Snap, Motion.Chain ? DescribeChainRun(Motion.Chain) : null)),
+      { Why: `the bridge refused the last approved motion (${compactOutputText(Text, 100)})` });
   };
   BridgeRefusedTaskMotionRef.current = BridgeRefusedTaskMotion;
 
@@ -4868,7 +4925,7 @@ function App() {
     }
   };
 
-  const runAiRequest = async (promptText: string, options?: { auto?: boolean }) => {
+  const runAiRequest = async (promptText: string, options?: { auto?: boolean; checkIn?: AppCheckIn }) => {
     // An answer to the model's question goes on with the asked task, its question included.
     const Answered = options?.auto ? null : ContinueAskedTask(promptText, AskedTaskRef.current);
     const prompt = Answered?.Task ?? promptText.trim();
@@ -4879,6 +4936,7 @@ function App() {
       return;
     }
     const RequestEpoch = ++AiEpochRef.current;
+    let PreviousEnd: string | null = null;
 
     const requestModel = aiModel;
     if (!requestModel) {
@@ -4912,6 +4970,8 @@ function App() {
       ChainRunRef.current = null;
       ChainProposalRef.current = null;
       TaskIdRef.current += 1;
+      // How the last task ended: a new task's first model call is told of the app's steps in it (lib/AppPlannedSteps.ts).
+      PreviousEnd = TaskEndReasonRef.current;
       TaskEndReasonRef.current = null;
       AiSettleWaitRef.current = null;
       setAiSettleWait(null);
@@ -5142,6 +5202,9 @@ function App() {
       // gripper hides part of the object and made again when it moved.
       // Async: the reach verdict and GRASP PLAN are planned in a worker (PlanReachability), the page handling clicks meanwhile.
       // False: the task was stopped or replaced while it planned, or the planner failed (then the task stops saying so).
+      // How the GRASP PLAN fared at this check-in's binding: kept (with the verdict's note and corridor, and whether the
+      // camera's tape check corrected it) or made again. The app proposes its own next step only after a clean keep.
+      let PlanCheck: { Kept: boolean; Note: string | null; Corridor: boolean; Tape: boolean } | null = null;
       const BindTaskObject = async (State: TaskObjectState, Binding: TaskObjectBinding): Promise<boolean> => {
         const Planned = async (Planned_?: ReachPlanned) => {
           const Reach = await PlanReachability(Binding.Object, Context, Planned_, RequestAbort.signal);
@@ -5156,9 +5219,10 @@ function App() {
         let PlanKept = false;
         // A grasp's GRASP PLAN puts the fixed pad the task's grasp gap outside the object (lib/GraspGap.ts), its points
         // held to the floor of the surface the object stands on (lib/AiMeasurements.ts TaskSupport; the desk's as always).
-        const Floor = TaskSupport(Binding.Object, State.Label).Floor;
+        // (On a frame that registered no scene, a desk object keeps the solids its last plan was made clear of: KeptDeskFloor.)
+        const Floor = KeptDeskFloor(TaskSupport(Binding.Object, State.Label).Floor, Binding.Object, State.Plan?.Source ?? null);
         const Context: ReachContext = { Servos: requestServos, ElbowMode: requestElbowMode, Limits: requestLimits, ClearanceCm: TaskGraspGapRef.current,
-          ...(Floor.Surface ? { Floor } : {}) };
+          ...(Floor.Surface || Floor.Solids?.length ? { Floor } : {}) };
         if (!CameraVerifiedRef.current) State.Reachability = null;
         else if (State.Intent === "grasp") {
           const Key = GraspPlanKey(requestServos, requestElbowMode, requestLimits);
@@ -5183,18 +5247,20 @@ function App() {
               recordSessionEvent("grasp_tape", { label: State.Label, residual_cm: Tape.Fix.ResidualCm, along_cm: Number(Tape.Fix.AlongCm.toFixed(2)),
                 shift_cm: Number(Tape.Fix.ShiftCm.toFixed(2)), clamped: Tape.Fix.Clamped, moved: Tape.Moved, grasp: Grasp_ ? { x: Grasp_.x, y: Grasp_.y, z: Grasp_.z } : null });
             }
+            PlanCheck = { Kept: true, Note: Verdict.Note, Corridor: Boolean(Verdict.Corridor), Tape: Boolean(Tape) };
             State.Reachability = State.Plan.Reach;
           } else {
             // Label: its refusal's advice names it as the stop's headline does (the task's word, not the detector's).
             const Reach = await Planned({ Others: NeighbourObjects(Measured ?? [], Binding.Object), Kind: State.Label, Label: State.Label });
             if (!Reach) return false;
+            PlanCheck = { Kept: false, Note: Verdict.Note, Corridor: false, Tape: false };
             State.Reachability = Reach;
             // Missed, and the re-measure plans no grasp: the missed plan stays (Missed), so its steps take the
             // closed jaws up clear of the object before anything else; the model is told why.
             if (!Reach.Plan && JawsMissed && State.Plan) {
               State.Plan = KeepMissed(State.Plan, Binding.Object, Reach);
               State.Reachability = State.Plan.Reach;
-            } else State.Plan = Reach.Plan ? { Reach, Source: Binding.Object, At: Date.now(), Key, Note: Verdict.Note, Confirmed: false, Corridor: null,
+            } else State.Plan = Reach.Plan ? { Reach, Source: PlanSource(Binding.Object, Floor), At: Date.now(), Key, Note: Verdict.Note, Confirmed: false, Corridor: null,
               // Made again after the jaws closed on nothing: the NEXT STEP says so while they are still closed.
               ...(Verdict.AfterMiss ? { AfterMiss: true } : {}) } : null;
           }
@@ -5219,6 +5285,8 @@ function App() {
             clearance_cm: Plan?.ClearanceCm ?? null, grasp_gap_cm: TaskGraspGapRef.current,
             // A best-effort plan (GraspPlan.ts GraspRules.BestEffort): what the app is not sure of.
             warnings: Plan?.Warnings ?? null,
+            // What it was told of the object's measurement (GraspPlan.ts Caveats: a solid against it not measured apart).
+            caveats: Plan?.Caveats ?? null,
             // A deep plan (GraspPlan.ts GraspRules.DeepGrasp): the palm and servo's gap to it, and the STS3215 servo's alone, at the grasp point.
             palm_gap_cm: Plan?.PalmGapCm != null ? Number(Plan.PalmGapCm.toFixed(2)) : null, servo_gap_cm: Plan?.ServoGapCm != null ? Number(Plan.ServoGapCm.toFixed(2)) : null,
             closer_cm: State.Reachability.CloserCm ?? State.Reachability.Refusal?.CloserCm ?? null,
@@ -5370,8 +5438,120 @@ function App() {
       };
       // Only a step the guard holds the moves near the object to (BuildGraspGuard): the reminder says the app refuses the others.
       const Reminder = TaskObject ? NextStepReminder(GuardNow()?.Step ?? null, TaskObject.Label) : null;
+
+      // THE APP RUNS THE GRASP PLAN'S STEPS ITSELF (lib/AppPlannedSteps.ts). After a motion that settled as planned, with
+      // the GRASP PLAN kept and the task object re-measured where it was planned, the plan's NEXT STEP is proposed by the
+      // app, without a model call: read, snapped and checked exactly like a reply (and exactly as planned: a step the snap
+      // would move goes to the model), on the same approval card. After the plan's lift with the jaws holding the object,
+      // a grab-only task ends there. Anything else (the reason first found below) calls the model, which is then told
+      // which steps the app ran on its own since its last reply.
+      const TaskNow = aiTaskRef.current;
+      const HeldNow = TaskGripperClosedRef.current && rawToFraction(requestServos.gripper, requestServos.gripper.presentRaw) >= HeldFraction;
+      const AppBlocker = (): string | null => {
+        if (!options?.auto) return Answered ? "the user answered the AI's question" : "the task starts: the AI reads the request and picks the object";
+        if (!TaskNow) return "no task is running";
+        if (!options.checkIn) return "this check-in does not follow an approved motion that settled";
+        if (options.checkIn.Why) return options.checkIn.Why;
+        if (!TaskObject || TaskObject.Intent !== "grasp") return "the task is not a grasp";
+        const State = TaskObject.Plan;
+        if (!State?.Reach.Plan) return `the planner has no GRASP PLAN for the ${TaskObject.Label}`;
+        if (State.Missed || State.AfterMiss) return "the jaws closed on nothing at the GRASP PLAN's grasp point";
+        if (State.Corridor) return `the ${TaskObject.Label} may have moved into the gripper's way`;
+        if (TaskObject.Occluded && !AppStepRules.RunWhileHidden) return `the gripper hides the ${TaskObject.Label}, so the AI checks the image`;
+        if (PlanCheck && !PlanCheck.Kept) return `the GRASP PLAN was made again${PlanCheck.Note ? ` (${PlanCheck.Note})` : ""}`;
+        if (PlanCheck?.Note) return `the GRASP PLAN was kept, but ${PlanCheck.Note}`;
+        if (PlanCheck?.Corridor) return `the ${TaskObject.Label} may have moved into the gripper's way`;
+        if (PlanCheck?.Tape) return "the camera's tape check corrected the GRASP PLAN";
+        if (!LineStep) return "the planner gave no NEXT STEP";
+        // The plan's last step: lifted with the jaws holding it. Only a grab-only task ends here, and only with the object
+        // not measured where it stood (the jaws did not take it).
+        if (IsLiftedStep(LineStep.Text)) {
+          if (!HeldNow) return `the jaws do not read as holding the ${TaskObject.Label}`;
+          if (!GraspOnlyRequest(TaskNow.task, TaskObject.Query ?? null)) return `the grasp is done, and the request asks for more than picking up the ${TaskObject.Label}`;
+          const Source = State.Source;
+          const Left = (Measured ?? []).find(Object_ => TaskObject.Query && NamesQuery(TaskObject.Query, Object_.label)
+            && Math.hypot(Object_.x - Source.x, Object_.y - Source.y) <= AppStepRules.LeftBehindCm && Math.abs(Object_.z - Source.z) <= AppStepRules.LeftBehindZCm);
+          if (Left) return `the ${TaskObject.Label} is still measured where it stood (X ${Left.x.toFixed(1)}, Y ${Left.y.toFixed(1)})`;
+          return null;
+        }
+        if (!TaskObject.DetectedNow || !TaskObject.Binding || !PlanCheck) return `the ${TaskObject.Label} was not measured and bound this check-in`;
+        return StepNeedsModel(LineStep.Text, LineStep.Json);
+      };
+      let ModelCallReason = AppBlocker();
+      if (!ModelCallReason && TaskNow && TaskObject?.Plan?.Reach.Plan && LineStep && IsLiftedStep(LineStep.Text)) {
+        const Percent = Math.round(rawToFraction(requestServos.gripper, requestServos.gripper.presentRaw) * 100);
+        const Reply = AppDoneReply(TaskObject.Label, Percent);
+        recordSessionEvent("planned_step", { app_run: true, finished: true, model_call_skipped: true, reason: `the GRASP PLAN's lift is done with the jaws holding the ${TaskObject.Label} (${Percent}% open), and the request was only to pick it up`,
+          step: null, task: TaskNow.task, task_step: TaskNow.step, model_ms_saved_estimate: LastModelMsRef.current == null ? null : Math.round(LastModelMsRef.current) });
+        aiContinueOnApproveRef.current = false;
+        RecordTaskEnd(`the app finished the grasp: the GRASP PLAN's lift is done with the jaws holding the ${TaskObject.Label}.`, "app_done", TaskNow);
+        aiTaskRef.current = null;
+        setAiTask(null);
+        setAiLastReply(Reply);
+        setAiObjectBox(ObjectBoxOf(TaskObjectRef.current?.LastSeen?.Object ?? null));
+        recordSessionEvent("result", { reply: Reply, task_status: "done", approvable: null, shown: null, issues: [], revisions: 0, target_estimate_cm: null,
+          status: "Task finished", app_run: true });
+        setAiStatus("Task finished");
+        pushLog("ok", `Task finished by the app: ${compactOutputText(Reply)}`);
+        return;
+      }
+      if (!ModelCallReason && TaskNow && TaskObject?.Plan?.Reach.Plan && LineStep?.Json) {
+        setAiStatus("Checking the GRASP PLAN's next step");
+        const Offer = await SnapResponse(parseAiResponse(`{"response_to_user":"","task_status":"continue","motion_proposal":${LineStep.Json}}`,
+          requestTarget, requestServos));
+        if (RequestEpoch !== AiEpochRef.current) return;
+        const Check = Offer.motion
+          ? validateAiMotionProposal(Offer.motion, requestElbowMode, requestServos, UnreliableObjects, requestLimits, TaskGrasp(requestServos), Offer.motion.guard ?? null)
+          : null;
+        const Idle = Offer.motion && Check?.possible ? NoOpReason(noOpView(Offer.motion), LiveTip(), BridgeTargetRef.current,
+          Object.fromEntries(SERVO_ORDER.map(Name => [Name, servosRef.current[Name].targetRaw]))) : null;
+        ModelCallReason = !Offer.motion ? "the NEXT STEP's JSON is not a motion"
+          : taskMotionSnap(Offer.motion) ? "the NEXT STEP's target is not reachable exactly as planned (the snap would move it)"
+          : !Check?.possible ? `the NEXT STEP did not pass the app's checks (${compactOutputText(Check?.issues.join(" ") ?? "", 140)})`
+          : Idle ? `the NEXT STEP would not move the arm (${Idle})`
+          : Offer.motion.hasTargetMotion && !Offer.motion.chain && RepeatsLastTarget(LastFinalTargetRef.current, Offer.motion.target) ? "the NEXT STEP repeats the last target"
+          : null;
+        if (!ModelCallReason && Offer.motion) {
+          const Note = [AppRunStepNote, BestEffortNote(TaskObject.Plan.Reach.Plan)].filter(Boolean).join(" ");
+          const Motion: AiMotionProposal = { ...Offer.motion, planned: true, approvalNote: Note, appRun: { What: StepWords(LineStep.Text), Json: LineStep.Json } };
+          const Reply = AppRunStepReply(LineStep.Text);
+          if (Motion.hasTargetMotion) LastFinalTargetRef.current = MarkFinalTarget(Motion.target);
+          const Status = TaskNow.step >= MAX_AI_TASK_STEPS ? `Last motion of this task (${MAX_AI_TASK_STEPS} of ${MAX_AI_TASK_STEPS}): approving it ends the task`
+            : `Task motion ${TaskNow.step} ready: the app's planned step (no AI call needed)`;
+          recordSessionEvent("planned_step", { app_run: true, offered: true, model_call_skipped: true, reason: AppRunReason, step: LineStep.Json,
+            motion: motionRecord(Motion), task: TaskNow.task, task_step: TaskNow.step,
+            model_ms_saved_estimate: LastModelMsRef.current == null ? null : Math.round(LastModelMsRef.current) });
+          setAiLastReply(Reply);
+          setAiProposal(Motion);
+          setAiDisplayedProposal(Motion);
+          setAiDisplayedIssues([]);
+          setAiTargetEstimate(null);
+          setAiObjectBox(ObjectBoxOf(TaskObjectRef.current?.LastSeen?.Object ?? null));
+          recordSessionEvent("result", { reply: Reply, task_status: "continue", approvable: motionRecord(Motion), shown: motionRecord(Motion), issues: [],
+            revisions: 0, target_estimate_cm: null, status: Status, app_run: true });
+          pushLog("ok", "The app's planned NEXT STEP is offered (no AI call needed)");
+          pushLog("info", `App: ${compactOutputText(Reply)}`);
+          // As a model's "continue" with a motion (below): the task's last allowed motion ends it once approved.
+          if (TaskNow.step >= MAX_AI_TASK_STEPS) {
+            aiContinueOnApproveRef.current = false;
+            TaskEndsAfterApprovalRef.current = true;
+            pushLog("warn", `Task loop: motion ${MAX_AI_TASK_STEPS} is the last one allowed`);
+          } else {
+            aiContinueOnApproveRef.current = true;
+          }
+          setAiStatus(Status);
+          return;
+        }
+      }
+      // The model is called: why, and the steps the app ran on its own since its last call (told once, then cleared).
+      // (A new task after one that ended with the app's steps since the model's last reply: those steps, and how it ended.)
+      const AppStepsNote = AppStepsSummary(AppStepsSinceModelRef.current, options?.auto ? ModelCallReason ?? "the app found no step to run itself"
+        : `the last task ended${PreviousEnd ? ` (${PreviousEnd.replace(/\.$/, "")})` : ""} and a new prompt was sent`);
+      const AppStepsTold = AppStepsSinceModelRef.current.length;
+      AppStepsSinceModelRef.current = [];
+      const ModelPrompt = WithAppStepsSummary(prompt, AppStepsNote);
       const userTextContent = buildAiUserPrompt(
-        prompt,
+        ModelPrompt,
         requestCurrentPosition,
         requestServos,
         [visionAttachment ? visionAttachment.summary + MeasuredObjectsSummary(Located, TaskObject?.DetectedNow ? TaskObject.Binding?.Object ?? null : null,
@@ -5409,8 +5589,10 @@ function App() {
         AiMaxOutputTokens, RecordUsage, Signal), RequestAbort.signal, AiModelTimeoutMs, `the model (${requestModel})`)
         .finally(() => { ModelWarmAtRef.current = Date.now(); });
       setAiStatus(`Asking ${requestModel}`);
+      const ModelStarted = performance.now();
       const content = await AskModel(baseMessages);
       if (RequestEpoch !== AiEpochRef.current) return;
+      LastModelMsRef.current = performance.now() - ModelStarted;
       const notepadUpdate = extractNotepadUpdate(content);
       if (notepadUpdate) {
         setAiNotepad(notepadUpdate);
@@ -5430,7 +5612,7 @@ function App() {
       let aiStatusText = aiResponse.motion ? "Possible motion proposal ready" : "AI model responded";
       let aiLogText = aiResponse.motion ? "AI motion proposal passed feasibility check" : "AI response only";
       let nextConversation: AiChatMessage[] = [
-        { role: "user", content: prompt },
+        { role: "user", content: ModelPrompt },
         { role: "assistant", content },
       ];
 
@@ -5439,7 +5621,9 @@ function App() {
         : null;
       recordSessionEvent("reply", { attempt: 0, reply: aiResponse.userMessage, task_status: aiResponse.taskStatus,
         motion: motionRecord(aiResponse.motion), possible: validation?.possible ?? null, issues: validation?.issues ?? [],
-        notepad_update: notepadUpdate ?? null });
+        notepad_update: notepadUpdate ?? null,
+        // Why the model was called instead of the app proposing the GRASP PLAN's step itself, how long it took, and how many app steps it was told of.
+        model_call_reason: ModelCallReason, model_ms: Math.round(LastModelMsRef.current ?? 0), app_steps_told: AppStepsTold });
       // Whether a proposal of this check-in was refused for not following the NEXT STEP (GraspPlan.ts NextStepReason).
       const StepRefusedNow = () => Boolean(validation?.issues.some(Issue => Issue.includes(NextStepRefusalLead)));
       let StepRefused = StepRefusedNow();
@@ -5523,6 +5707,25 @@ function App() {
           issues: validation?.issues ?? [], notepad_update: revisedNotepadUpdate ?? null });
         return true;
       };
+
+      // A task reply of "continue" with no motion (2026-10-25 02:08: "I'll move a bit closer and lower", no JSON)
+      // used to end the task. It gets one corrective turn in this check-in, like a no-op's (same task, same step);
+      // its answer goes through every check below. A second reply without one ends the task (NoMotionTwiceReason).
+      let AskedForMotion = false;
+      if (aiTaskRef.current && aiResponse.taskStatus === "continue" && !aiResponse.motion) {
+        AskedForMotion = true;
+        recordSessionEvent("no_motion", { reply: aiResponse.userMessage, task: aiTaskRef.current.task, task_step: aiTaskRef.current.step });
+        setAiStatus("The AI said continue without a motion; asking it for the motion");
+        pushLog("warn", "AI replied \"continue\" without a motion: asking it for the motion it described");
+        if (!(await AskAgain(NoMotionFeedbackPrompt(), "No-motion feedback: the reply said continue but had no motion_proposal.", "no-motion"))) return;
+        if (RejectedBefore()) { StopRejectedAgain(); return; }
+        if (validation && !validation.possible) lastFailureIssues = validation.issues;
+        StepRefused ||= StepRefusedNow();
+        if (aiResponse.motion && validation) {
+          aiStatusText = "Possible motion proposal ready";
+          aiLogText = "AI gave the motion it described after being asked";
+        }
+      }
 
       while (
         aiResponse.motion
@@ -5660,6 +5863,11 @@ function App() {
         LastFinalTargetRef.current = MarkFinalTarget(aiResponse.motion.target);
       }
 
+      // The model copied the GRASP PLAN's NEXT STEP: after it, the app may propose the plan's next step itself (lib/AppPlannedSteps.ts).
+      if (aiResponse.motion && !aiResponse.motion.planned && LineStep?.Json && TaskObject?.Plan?.Reach.Plan) {
+        const Step = parseAiResponse(`{"response_to_user":"","task_status":"continue","motion_proposal":${LineStep.Json}}`, requestTarget, requestServos).motion;
+        if (Step && SameStep(aiResponse.motion, Step)) aiResponse = { ...aiResponse, motion: { ...aiResponse.motion, followsPlan: true } };
+      }
       // A move of a best-effort grasp (GraspPlan.ts GraspRules.BestEffort): the card says what the app is not sure of.
       const BestEffort = aiResponse.motion && !aiResponse.motion.approvalNote ? BestEffortNote(TaskObjectRef.current?.Plan?.Reach.Plan) : null;
       if (BestEffort && aiResponse.motion) aiResponse = { ...aiResponse, motion: { ...aiResponse.motion, approvalNote: BestEffort } };
@@ -5712,7 +5920,7 @@ function App() {
         } else {
           aiContinueOnApproveRef.current = false;
           RecordTaskEnd(aiResponse.taskStatus === "done" ? "the AI reported the task done." : aiResponse.taskStatus === "ask" ? "the AI asked for input."
-            : "the AI replied without a motion to continue with.",
+            : AskedForMotion && aiResponse.taskStatus === "continue" ? NoMotionTwiceReason : "the AI replied without a motion to continue with.",
           aiResponse.taskStatus === "done" ? "model_done" : aiResponse.taskStatus === "ask" ? "model_ask" : "model_no_motion", taskState);
           aiTaskRef.current = null;
           setAiTask(null);
@@ -5749,8 +5957,8 @@ function App() {
 
   // Keep the ref pointing at the freshest closure so the settle effect's auto
   // check-in always reads current state.
-  runAiRequestRef.current = (promptText: string) => {
-    void runAiRequest(promptText, { auto: true });
+  runAiRequestRef.current = (promptText: string, CheckIn?: AppCheckIn) => {
+    void runAiRequest(promptText, { auto: true, checkIn: CheckIn });
   };
 
   const submitAiPrompt = (event?: FormEvent) => {
@@ -5904,7 +6112,7 @@ function App() {
     aiContinueOnApproveRef.current = false;
     TaskEndsAfterApprovalRef.current = false;
     setAiLastReply(`Not sent: ${Issues.join(" ")} Asking the AI for a different target.`);
-    runAiRequestRef.current(NotSentFeedbackPrompt(Issues));
+    runAiRequestRef.current(NotSentFeedbackPrompt(Issues), { Why: `the app could not send the last approved motion (${compactOutputText(Issues.join(" "), 100)})` });
   };
 
   // The check-in after an approved task motion has settled: what it measurably
@@ -5915,10 +6123,20 @@ function App() {
     pushLog("info", `Task loop: motion settled, starting check-in ${taskState.step}`);
     const Motion = LastTaskMotionRef.current, Live = servosRef.current;
     const Servos = Motion?.ServoTargets.map(Item => `${formatServoLabel(Item.name)} now at raw ${Live[Item.name].presentRaw} (commanded ${Item.targetRaw})`).join(", ");
+    const EndTip = LiveTip().Tip;
     const Fact = Motion ? DescribeMotionFact({ Step: Motion.Step, StartTip: mirrorDisplayPoint(Motion.StartTip),
-      EndTip: mirrorDisplayPoint(LiveTip().Tip), Target: Motion.Target && mirrorDisplayPoint(Motion.Target), Servos: Servos || null,
-      Snap: Motion.Snap, Chain: Motion.Chain ? DescribeChainRun(Motion.Chain) : null, Planned: Motion.Planned }) : null;
-    runAiRequestRef.current(BuildTaskCheckInPrompt(taskState, TaskMotionsRef.current, Fact, Boolean(Motion?.Snap)));
+      EndTip: mirrorDisplayPoint(EndTip), Target: Motion.Target && mirrorDisplayPoint(Motion.Target), Servos: Servos || null,
+      Snap: Motion.Snap, Chain: Motion.Chain ? DescribeChainRun(Motion.Chain) : null, Planned: Motion.Planned, AppRun: Motion.AppRun }) : null;
+    // Whether that motion went as planned: if so, the app may propose the GRASP PLAN's next step itself (lib/AppPlannedSteps.ts).
+    const Gap = (A: Point3, B: Point3) => Math.hypot(A.x - B.x, A.y - B.y, A.z - B.z);
+    const CheckIn: AppCheckIn = { Why: !Motion ? "the motion this check-in follows is not known" : MotionAnomaly({ MovedCm: Gap(Motion.StartTip, EndTip),
+      OffTargetCm: Motion.Target ? Gap(EndTip, Motion.Target) : null, Chain: Motion.Chain ?? null, Snapped: Boolean(Motion.Snap), Tolerance: TASK_SETTLE_RAW_TOLERANCE,
+      Servos: Motion.ServoTargets.map(Item => ({ Name: Item.name, CommandedRaw: Item.targetRaw, PresentRaw: Live[Item.name].presentRaw,
+        Closing: Item.name === "gripper" && rawToFraction(Live.gripper, Item.targetRaw) <= CloseTargetFraction })) })
+      // The app's step offered after the model did not follow the plan: the model is told of it, as before.
+      ?? (Motion.Planned ? "the last motion was the app's planned step, offered because the AI did not follow the NEXT STEP"
+        : !Motion.FollowsPlan ? "the last motion was the AI's own, not the GRASP PLAN's NEXT STEP" : null) };
+    runAiRequestRef.current(BuildTaskCheckInPrompt(taskState, TaskMotionsRef.current, Fact, Boolean(Motion?.Snap)), CheckIn);
   };
 
   // --- Chained motion (lib/AiChain.ts) ----------------------------------------
@@ -6144,13 +6362,15 @@ function App() {
       const TipLine = `tip to X ${formatAiPromptNumber(Point.x)}, Y ${formatAiPromptNumber(Point.y)}, Z ${formatAiPromptNumber(Point.z)} cm, wrist ${formatAiPromptNumber(Approved.wristPitchTarget)} deg`
         + (Snapped ? SnapMotionNote(Snapped) : "");
       const GripperLine = `gripper to raw ${Approved.chain!.TargetRaw}`;
-      TaskMotionsRef.current = [...TaskMotionsRef.current, `- Motion ${Task.step} (chained${Together ? ", one motion" : ""}${Approved.planned ? ", the app's planned NEXT STEP" : ""}): `
+      TaskMotionsRef.current = [...TaskMotionsRef.current, `- Motion ${Task.step} (chained${Together ? ", one motion" : ""}${Approved.appRun ? ", the app's planned NEXT STEP, proposed by the app without asking you"
+        : Approved.planned ? ", the app's planned NEXT STEP" : ""}): `
         + (Together ? `${TipLine}, the ${GripperLine} on the way` : Run.Order === "before" ? `${GripperLine}, then ${TipLine}` : `${TipLine}, then ${GripperLine}`)].slice(-MAX_AI_TASK_STEPS);
+      if (Approved.appRun) AppStepsSinceModelRef.current = [...AppStepsSinceModelRef.current, { Step: Task.step, ...Approved.appRun }];
     }
     if (Continues && Task) {
       LastTaskMotionRef.current = { Step: Task.step, StartTip: Live.Tip, Target: Approved.target,
         ServoTargets: [{ name: "gripper", targetRaw: Approved.chain!.TargetRaw }], Snap: taskMotionSnap(Approved), Record: motionRecord(Approved), Chain: Run,
-        Planned: Approved.planned };
+        Planned: Approved.planned && !Approved.appRun, AppRun: Boolean(Approved.appRun), FollowsPlan: Boolean(Approved.appRun || Approved.followsPlan) };
       const nextTask: AiTaskState = { ...Task, step: Task.step + 1 };
       aiTaskRef.current = nextTask;
       setAiTask(nextTask);
@@ -6249,7 +6469,7 @@ function App() {
       aiContinueOnApproveRef.current = false;
       TaskEndsAfterApprovalRef.current = false;
       setAiLastReply(`Not sent: ${NoOp}. Asking the AI for a different target.`);
-      runAiRequestRef.current(NoOpFeedbackPrompt(NoOp));
+      runAiRequestRef.current(NoOpFeedbackPrompt(NoOp), { Why: `the last approved motion would not move the arm (${NoOp})` });
       return;
     }
     if (Approved.chain && Approved.hasTargetMotion) {
@@ -6285,10 +6505,12 @@ function App() {
       task: aiTaskRef.current?.task ?? null, step: aiTaskRef.current?.step ?? null });
     if (aiTaskRef.current) {
       const Point = mirrorDisplayPoint(Approved.target), Snapped = taskMotionSnap(Approved);
-      TaskMotionsRef.current = [...TaskMotionsRef.current, `- Motion ${aiTaskRef.current.step}${Approved.planned ? " (the app's planned NEXT STEP)" : ""}: `
+      TaskMotionsRef.current = [...TaskMotionsRef.current, `- Motion ${aiTaskRef.current.step}${Approved.appRun ? " (the app's planned NEXT STEP, proposed by the app without asking you)"
+        : Approved.planned ? " (the app's planned NEXT STEP)" : ""}: `
         + (Approved.hasTargetMotion ? `tip to X ${formatAiPromptNumber(Point.x)}, Y ${formatAiPromptNumber(Point.y)}, Z ${formatAiPromptNumber(Point.z)} cm, wrist ${formatAiPromptNumber(Approved.wristPitchTarget)} deg` : "no tip move")
         + (Snapped ? SnapMotionNote(Snapped) : "")
         + (ServoMoves.length ? `; ${ServoMoves.map(Item => `${Item.name} to raw ${Item.targetRaw}`).join(", ")}` : "")].slice(-MAX_AI_TASK_STEPS);
+      if (Approved.appRun) AppStepsSinceModelRef.current = [...AppStepsSinceModelRef.current, { Step: aiTaskRef.current.step, ...Approved.appRun }];
     }
 
     const hasServoTargets = ServoMoves.length > 0;
@@ -6324,7 +6546,8 @@ function App() {
       }
       LastTaskMotionRef.current = { Step: aiTaskRef.current.step, StartTip: Live.Tip,
         Target: Approved.hasTargetMotion ? Approved.target : null, ServoTargets: ServoMoves,
-        Snap: Approved.hasTargetMotion ? taskMotionSnap(Approved) : null, Record: motionRecord(Approved), Planned: Approved.planned };
+        Snap: Approved.hasTargetMotion ? taskMotionSnap(Approved) : null, Record: motionRecord(Approved), Planned: Approved.planned && !Approved.appRun,
+        AppRun: Boolean(Approved.appRun), FollowsPlan: Boolean(Approved.appRun || Approved.followsPlan) };
       const nextTask: AiTaskState = {
         ...aiTaskRef.current,
         step: aiTaskRef.current.step + 1,
@@ -6426,6 +6649,16 @@ function App() {
     { Label: "FAULT", State: ProtectionState.Reason ? "TRIP" : "CLEAR", Lit: ProtectionState.Reason ? "alarm" : "off",
       Title: ProtectionState.Reason || "No motor or motion fault" },
   ];
+
+  const CanvasSelectJoint = UseLatestCallback(SelectJoint);
+  const CanvasJointChange = UseLatestCallback((Name: ServoName, Raw: number) => { updateServo(Name, Raw); });
+  const CanvasCaptureAlignment = UseLatestCallback(CaptureCadReference);
+  const CanvasTargetDragStart = UseLatestCallback(BeginTargetEdit);
+  const CanvasTargetDragEnd = UseLatestCallback(FinishTargetEdit);
+  const CanvasTargetChange = UseLatestCallback(PreviewVisualTarget);
+  const CanvasProposalJoints = useMemo(() => aiProposalIkPreview ? sceneJointsFromDisplayJoints(aiProposalIkPreview.joints)
+    : AiDirectServoPreviewAngles ? sceneJointsFromDisplayJoints(forwardDisplayKinematics(AiDirectServoPreviewAngles)) : undefined,
+  [aiProposalIkPreview, AiDirectServoPreviewAngles]);
 
   return (
     <div className="app-shell dashboard-app" data-mode={ControlMode} data-scanlines={DisplaySettings.ScanLines}>
@@ -6669,30 +6902,24 @@ function App() {
             ref={armCanvasRef}
             Settings={DisplaySettings}
             Mode={ControlMode}
-            SelectedJoint={SelectedJoint} SelectedAxis={SelectedAxis} Servos={servos} OnSelectJoint={SelectJoint}
-            OnJointChange={ControlMode === "Manual" && !GuideActive ? (Name, Raw) => { updateServo(Name, Raw); } : undefined}
+            SelectedJoint={SelectedJoint} SelectedAxis={SelectedAxis} Servos={servos} OnSelectJoint={CanvasSelectJoint}
+            OnJointChange={ControlMode === "Manual" && !GuideActive ? CanvasJointChange : undefined}
             angles={angles}
             previewAngles={ControlMode === "Ai" ? aiProposalIkPreview?.angles ?? AiDirectServoPreviewAngles ?? angles : ikPreview.angles}
             proposalAngles={ControlMode === "Ai" ? undefined : aiProposalIkPreview?.angles ?? AiDirectServoPreviewAngles ?? undefined}
             alignmentRecorded={GetCadAlignment().Verified}
             canCaptureAlignment={armConnected && !torque && CadCompatibleRef.current}
-            onCaptureAlignment={CaptureCadReference}
+            onCaptureAlignment={CanvasCaptureAlignment}
             joints={renderJoints}
             previewJoints={renderPreviewJoints}
             previewReachable={ControlMode === "Ai" ? aiProposalIkPreview?.reachable ?? true : ikPreview.reachable}
-            proposalJoints={
-              aiProposalIkPreview
-                ? sceneJointsFromDisplayJoints(aiProposalIkPreview.joints)
-                : aiDirectServoPreviewJoints
-                  ? sceneJointsFromDisplayJoints(aiDirectServoPreviewJoints)
-                  : undefined
-            }
+            proposalJoints={CanvasProposalJoints}
             proposalReachable={aiProposalIkPreview?.reachable ?? true}
             proposalTarget={renderProposalTarget}
             proposalEffectiveWristPitch={aiProposalIkPreview?.effectiveWristPitch}
             targetWristPitchReachable={targetWristPitchReachable}
             effectiveWristPitch={targetEffectiveWristPitch}
-            pitchGuide={ControlMode === "Ai" ? [] : PitchGuide?.Key === PitchGuideKey ? PitchGuide.Segments : null}
+            pitchGuide={ControlMode === "Ai" ? NoPitchGuide : PitchGuide?.Key === PitchGuideKey ? PitchGuide.Segments : null}
             target={ControlMode === "Ai" && renderProposalTarget ? renderProposalTarget : visualTarget}
             TargetVisible={ControlMode === "Manual" || !!renderProposalTarget}
             TargetReadOnly={ControlMode === "Ai" || GuideActive}
@@ -6700,9 +6927,9 @@ function App() {
             objectBox={aiObjectBoxVisual}
             targetEditing={TargetEditing}
             targetSnapping={TargetSnapping}
-            onTargetDragStart={BeginTargetEdit}
-            onTargetDragEnd={FinishTargetEdit}
-            onTargetChange={PreviewVisualTarget}
+            onTargetDragStart={CanvasTargetDragStart}
+            onTargetDragEnd={CanvasTargetDragEnd}
+            onTargetChange={CanvasTargetChange}
           />
           <HudNotice Messages={log} />
         </>}

@@ -4,7 +4,7 @@ import { TrayBounds } from "./BasketCollision";
 import type { Matrix4 } from "three";
 import { CadForward, type CadAngles } from "./CadKinematics";
 import { SurfaceContains, type DeclaredSurface } from "./DeclaredSurfaces";
-import type { MeasuredScene } from "./SceneGeometry";
+import type { MeasuredScene, SceneSolid } from "./SceneGeometry";
 import { mirrorDisplayPoint, type Point3 } from "./robotModel";
 
 // The desk surface in the AI's display frame, measured with the gripper tip.
@@ -27,7 +27,8 @@ const FloorToleranceCm = 1e-6;
 // A depth-observed scene instead applies its support locally; scene solids and observed-space
 // route checks hold the rest. Outside that support the desk guard remains until observed
 // transit clearance can be certified: missing depth is never treated as empty space.
-export type AiFloor = { SurfaceZ: number; FloorZ: number; Surface: DeclaredSurface | null; Scene?: MeasuredScene | null };
+// Solids: a desk object's scene solids (SceneGeometry DeskSolids), obstacles on the desk's floor (GraspPlan ScenePrisms).
+export type AiFloor = { SurfaceZ: number; FloorZ: number; Surface: DeclaredSurface | null; Scene?: MeasuredScene | null; Solids?: SceneSolid[] };
 export const DeskFloor: AiFloor = { SurfaceZ: TableZCm, FloorZ: AiTableFloorCm, Surface: null };
 export const FloorBelowSurfaceCm = 1.0;
 

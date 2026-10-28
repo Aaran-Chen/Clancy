@@ -168,6 +168,32 @@ def ModelBounds(item: dict, frame: dict) -> np.ndarray:
     return bounds
 
 
+def ModelBoundsList(items: list, frame: dict) -> list[np.ndarray]:
+    """[ModelBounds(item, frame) for item in items], the same values, in one array pass.
+
+    A route plan builds a collision world for every check it makes, and a measured scene holds up to ~1400
+    obstacles and ~600 observed boxes: one at a time that was 34 ms a world. The arithmetic is ModelBounds'
+    own, element by element. Anything the fast pass cannot read as finite, ordered boxes goes through
+    ModelBounds item by item, so it raises exactly as before.
+    """
+    if not items:
+        return []
+    base = frame.get("RobotFrame", {}).get("ArmBasePositionCm")
+    try:
+        value = np.asarray([[item["min"], item["max"]] for item in items], dtype=float)
+        usable = (base and value.shape == (len(items), 2, 3) and np.isfinite(value).all()
+                  and not np.any(value[:, 1] <= value[:, 0]) and np.max(np.abs(value)) <= 300)
+    except (KeyError, TypeError, ValueError):
+        usable = False
+    if not usable:
+        return [ModelBounds(item, frame) for item in items]
+    bounds = value.copy()
+    bounds[:, :, 0] = -bounds[:, ::-1, 0] - base["x"]
+    bounds[:, :, 1] -= base["y"]
+    bounds[:, :, 2] -= base["z"]
+    return list(bounds)
+
+
 def Covered(bounds: np.ndarray, free: list[np.ndarray]) -> bool:
     """Exact coverage by a union of observed boxes; gaps never become free space."""
     missing = [bounds]

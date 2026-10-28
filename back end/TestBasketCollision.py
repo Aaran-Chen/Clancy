@@ -98,11 +98,10 @@ class BasketTests(Unittest.TestCase):
     def TestLegacyOrMissingHeightSettingDoesNotRestrictRoutes(Self):
         Controller, _, _ = LowController()
         Frame = Bridge._load_json(Root / "WorkspaceFrame.json")
-        OriginalLoad = Bridge._load_json
         for Value in (None, 999):
             if Value is None: Frame.pop("MinimumTipZCm", None)
             else: Frame["MinimumTipZCm"] = Value
-            with Patch.object(Bridge, "_load_json", side_effect=lambda File: Frame if File.name == "WorkspaceFrame.json" else OriginalLoad(File)):
+            with Patch.object(Bridge.WorkspaceFrameFile, "Data", return_value=Frame):
                 Controller.ValidateMotionPath({"shoulder_pan": Controller.servos["shoulder_pan"].present_raw - 34})
 
     def TestBoundsMatchBothAssemblyMounts(Self):

@@ -8,7 +8,7 @@ import Fs from "node:fs";
 import Http from "node:http";
 import Os from "node:os";
 import Path from "node:path";
-import { ListenOnUiPort } from "./UiTestLib.mjs";
+import { ListenOnUiPort, BackendPython } from "./UiTestLib.mjs";
 
 const Scratch = Fs.mkdtempSync(Path.join(Os.tmpdir(), "so101-session-log-"));
 const Backend = Path.resolve(import.meta.dirname, "../back end");
@@ -258,7 +258,7 @@ Test("ReviewRecording.py reads the record back: native and /v1 calls, warm-ups, 
     { kind: "grounding", model: "fake", labels: null, image_size: [1280, 720], reply: "[]", result: [], t: Now }]);
   await WaitForRecords(Records().length);
   await Pause(200);
-  const Python = Fs.readFileSync(Path.resolve(import.meta.dirname, "../.backend-python.txt"), "utf8").trim();
+  const Python = BackendPython();
   const Timeline = Execute(Python, ["ReviewRecording.py", "timeline", "--date", Day(), "--full"],
     { cwd: Backend, encoding: "utf8", env: { ...process.env, SO101_CAPTURES_ROOT: Scratch, PYTHONIOENCODING: "utf-8" } });
   const Line = (Kind, Pattern) => Assert.match(Timeline, new RegExp(`${Kind}\\s+${Pattern}`), `${Kind} ${Pattern}\n${Timeline}`);

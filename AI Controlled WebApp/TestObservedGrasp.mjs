@@ -107,11 +107,16 @@ Test('the object meets an observed solid only when one lies inside its measured 
   const Board = { label: 'shelf board', ...Box([-25 - Pad, 30 - Pad, 18 - Pad], [-3 + Pad, 44 + Pad, 19 + Pad]) };
   const Merged = { label: 'observed environment', ...Box([-12 - Pad, 35 - Pad, 20 - Pad], [-10 + Pad, 37 + Pad, 21 + Pad]) };
   for (const Solid of [Board, Merged]) Assert.equal(Api.SceneConflict(With([Solid])).Box, Solid);
-  // The planner refuses with where it is and what to do.
+  // The planner searches with it as an obstacle (GRASP ANYTHING, 2026-10-22: no refusal before the search), and refuses
+  // for what blocks the grasp, with where the solid against it is and what to do. Here that is the held can itself: the
+  // solid lies inside its measured box (an older bridge's scene, no task_contact, so not one it was measured against:
+  // CarriedObjectPathReason keeps the margin from it), and every lift would carry it through the can (review round 3:
+  // 7af0ced planned a side grasp under it, the can lifted with the solid inside it).
   const Refused = Api.PlanGrasp(Object_, -30, { ...Context, Floor: { ...Floor, Scene: With([Scene.obstacles[0], Merged]) } });
   Assert.equal(Refused.Plan, null);
-  Assert.equal(Refused.Refusal.Text, 'the camera measured the can running into observed environment beside it (at X -11.0, Y 36.0, Z 20.0 to 21.0), so the two were not measured apart');
-  Assert.equal(Refused.Refusal.Advice, 'Move the can 2 to 3 cm away from what stands beside it, then send the task again.');
+  Assert.match(Refused.Refusal.Text, /^no grasp is physically possible from here: .*; and the camera did not measure it apart from the observed environment against it \(at X -11\.0, Y 36\.0, Z 20\.0 to 21\.0\)$/);
+  Assert.match(Refused.Refusal.Text, /the held can would touch observed environment at 0% of the way there/);
+  Assert.match(Refused.Refusal.Advice, / Or move the can 2 to 3 cm away from what stands against it\.$/);
   Assert.equal(Api.SceneConflict(null), null);
   Assert.equal(Api.SceneConflict({ ...Scene, task_object: undefined }), null);
 });
@@ -138,9 +143,25 @@ Test("the bridge's measured contact decides the conflict; the boxes only for a s
   const Contact = { points: 334, min: [-29.9, 43.08, 10.32], max: [-26.2, 43.58, 13.43] };
   const Found = Api.SceneConflict(With([], Contact));
   Assert.deepEqual([Found.Low, Found.High, Found.Box.label], [Contact.min, Contact.max, 'observed environment']);
-  const Refused = Api.PlanGrasp(Object_, -30, { ...Context, Floor: { ...Floor, Scene: With([Scene.obstacles[0]], Contact) } });
-  Assert.equal(Refused.Plan, null);
-  Assert.equal(Refused.Refusal.Text, 'the camera measured the can running into observed environment beside it (at X -28.0, Y 43.3, Z 10.3 to 13.4), so the two were not measured apart');
+  // That contact is an obstacle (its points' box padded as the cells are), not a refusal: planned clear of it, and said
+  // (Caveats, not Warnings: those would let the guard leave the can out on the plan's descent, ActivePrisms).
+  const ContactFloor = { ...Floor, Scene: With([Scene.obstacles[0]], Contact) };
+  const Planned = Api.PlanGrasp(Object_, -30, { ...Context, Floor: ContactFloor });
+  Assert.ok(Planned.Plan, Planned.Refusal?.Text);
+  const Apart = 'the camera did not measure it apart from the observed environment against it (at X -28.0, Y 43.3, Z 10.3 to 13.4): planned clear of that, but the can may be larger than measured there';
+  Assert.deepEqual(Planned.Plan.Caveats, [Apart]);
+  Assert.ok(!(Planned.Plan.Warnings ?? []).includes(Apart));
+  // A desk object's floor (its scene not used, SceneGeometry DeskSolids): the same contact among its solids, the same caveat.
+  const DeskContact = { label: 'observed environment against it', min: Contact.min.map(V => V - Pad), max: Contact.max.map(V => V + Pad),
+    measured: { min: Contact.min, max: Contact.max } };
+  const DeskFloor = { ...Floor, Scene: null, Solids: [{ ...Scene.obstacles[0], label: 'observed environment' }, DeskContact] };
+  const Found_ = Api.FloorConflict(DeskFloor);
+  Assert.deepEqual([Found_.Low, Found_.High, Found_.Box.label], [Contact.min, Contact.max, 'observed environment']);
+  Assert.equal(Api.FloorConflict({ ...DeskFloor, Solids: [DeskFloor.Solids[0]] }), null);
+  Assert.deepEqual(Api.FloorConflict(ContactFloor), Found);
+  const Solid = Api.ScenePrisms(ContactFloor).find(P => P.Label === 'observed environment against it');
+  Assert.deepEqual([Solid.BaseZ, Solid.TopZ], [Contact.min[2] - Pad, Contact.max[2] + Pad]);
+  for (const Pose of [Planned.Plan.Poses.Hover, Planned.Plan.Poses.Grasp]) Assert.equal(Api.DeepestContact(Api.GripperSamples(Pose, Planned.Plan.Poses.JawDegs), [Solid], 0.4), null);
 });
 
 Test("lifted off its support, the object meets a cell of the support's level only where it was observed, a neighbour as before", () => {
@@ -158,4 +179,34 @@ Test("lifted off its support, the object meets a cell of the support's level onl
   // Observed inside the object's own box it touches whatever its level.
   const Inside = [{ label: 'observed environment', ...Box([Right - 1 - Pad, Y0 + 1 - Pad, Base - 0.6 - Pad], [Right - Pad + 0.1, Y0 + 2 + Pad, Base + 0.6 + Pad]) }];
   Assert.match(Api.CarriedObjectPathReason(Plan.Prism, Plan.Poses.Grasp, Plan.Poses.Grasp, Lift, Api.ScenePrisms({ ...Floor, Scene: { ...Scene, obstacles: Inside } })) ?? '', /would touch/);
+});
+
+Test('round 3, 7: held, only a solid the object was measured against keeps the carry margin off at the start; any other keeps it', () => {
+  // 7af0ced let the held box start within the 0.4 cm margin of any solid and only not come nearer: a cell beside the can,
+  // observed apart from it, lost its margin on the scene route, the desk route and in the planner alike.
+  Assert.ok(Plan);
+  const Pad = Api.SceneRules.DepthUncertaintyCm, Base = Plan.Prism.BaseZ;
+  const Right = Math.max(...Plan.Prism.Footprint.map(P => P.x)), Y0 = Math.min(...Plan.Prism.Footprint.map(P => P.y));
+  const Pose = Point => Api.solveIkPreview({ ...Api.modelPointFromDisplayPoint(Point), wristPitch: Plan.Pitch }, 'up', Home).angles;
+  const Lift = Pose(Plan.Approach.Release), Carry = Pose({ ...Plan.Grasp, x: Plan.Grasp.x + 2, z: Plan.Grasp.z + 0.5 });
+  // A solid 0.2 cm beside its right face, Z 3 to 5 cm over its base: on a desk object's floor (its scene's solids).
+  const Beside = { label: 'observed environment', ...Box([Right + 0.2 - Pad, Y0 - Pad, Base + 3 - Pad], [Right + 1.2 + Pad, Y0 + 1 + Pad, Base + 5 + Pad]) };
+  const Desk = Solid => ({ ...Floor, Scene: null, Solids: [Solid] });
+  const Held = (Solid, To) => Api.CarriedObjectPathReason(Plan.Prism, Plan.Poses.Grasp, Plan.Poses.Grasp, To, Api.ScenePrisms(Desk(Solid)), Desk(Solid));
+  Assert.match(Held(Beside, Lift) ?? '', /^the held can would touch observed environment at 0% of the way there$/);
+  // The same solid as one it was measured against (SceneGeometry DeskSolids: against): the lift out of it runs, a carry into it does not.
+  const Against = { ...Beside, against: true };
+  Assert.equal(Api.ScenePrisms(Desk(Against))[0].Against, true);
+  Assert.equal(Held(Against, Lift), null);
+  Assert.match(Held(Against, Carry) ?? '', /^the held can would (be pushed further into|touch) observed environment/);
+  // On a scene: a cell against the envelope is that solid only where the bridge measured one against it (task_contact).
+  const Cell = { label: 'observed environment', ...Box([-11, 31, 15], [-10, 32, 16]) };
+  const Prisms = Contact => Api.ScenePrisms({ ...Floor, Scene: { ...Scene, obstacles: [Cell], ...(Contact !== undefined ? { task_contact: Contact } : {}) } });
+  Assert.equal(Prisms({ points: 50, min: [-11, 31, 15], max: [-10.5, 31.5, 15.5] }).find(P => P.Label === Cell.label).Against, true);
+  for (const Contact of [null, undefined]) Assert.equal(Prisms(Contact).find(P => P.Label === Cell.label).Against, undefined);
+  // A measured neighbour it starts against (its own measurement put it there) is held as one it touches, on a rise too.
+  const Neighbour = Api.GraspPrism({ label: 'box', x: Right + 1.2, y: 33.5, z: Base, topZ: Base + 5, sizeCm: [2, 3], depthMeasured: true }, 'box');
+  const Measured = To => Api.CarriedObjectPathReason(Plan.Prism, Plan.Poses.Grasp, Plan.Poses.Grasp, To, [Neighbour], { ...Floor, Scene: null, Solids: [] });
+  Assert.equal(Measured(Lift), null);
+  Assert.match(Measured(Carry) ?? '', /^the held can would (be pushed further into|touch) box/);
 });

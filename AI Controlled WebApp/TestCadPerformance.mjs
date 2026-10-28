@@ -1,6 +1,6 @@
 import { chromium as Chromium } from "playwright";
-import { CadReadyMs, LaunchOptions, StartUiServer } from "./UiTestLib.mjs";
-import { readFileSync as ReadFile, mkdirSync as MakeDirectory, writeFileSync as WriteFile } from "node:fs";
+import { CadReadyMs, LaunchOptions, StartUiServer, BackendPython } from "./UiTestLib.mjs";
+import { mkdirSync as MakeDirectory, writeFileSync as WriteFile } from "node:fs";
 import { execFileSync as Execute } from "node:child_process";
 import { fileURLToPath as FilePath } from "node:url";
 import Path from "node:path";
@@ -14,7 +14,7 @@ import Assert from "node:assert/strict";
 // state is now the bridge's own state_snapshot(), connected and holding, as in the other UI suites.
 const Root = Path.dirname(FilePath(import.meta.url));
 const Backend = Path.resolve(Root, "../back end");
-const Python = ReadFile(Path.join(Root, "../.backend-python.txt"), "utf8").replace(/^\uFEFF/, "").trim();
+const Python = BackendPython();
 const State = JSON.parse(Execute(Python, ["-c", "import json, bridge_server; print(json.dumps(bridge_server.BridgeController().state_snapshot()))"],
   { cwd: Backend, encoding: "utf8" }));
 Object.assign(State, { arm_connected: true, torque: true, port: "FAKE", motion_fault: null, status: "CAD preview" });

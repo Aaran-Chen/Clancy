@@ -150,7 +150,7 @@ const With = (Changes, Make) => {
   Object.assign(Rules, Changes);
   try { return Make(); } finally { Object.assign(Rules, Saved); }
 };
-const AsLive = Make => With({ FixedFingerOffsetCm: 0, GraspSagCm: 0, StrictClosing: false, StraddleRoundObjects: false, PreferredPitchDeg: null, BestEffort: false, DeepGrasp: false }, Make);
+const AsLive = Make => With({ FixedFingerOffsetCm: 0, GraspSagCm: 0, StrictClosing: false, StraddleRoundObjects: false, PreferredPitchDeg: null, BestEffort: false, DeepGrasp: false, FixedJawExtraStandoffCm: 0 }, Make);
 // The two passes before the best-effort one (GraspRules.BestEffort false, 2026-10-04): their refusals.
 const Strictly = Make => With({ BestEffort: false }, Make);
 const AsBefore = Make => With({ FixedFingerOffsetCm: 1.5, GraspSagCm: 0.45, StrictClosing: false, StraddleRoundObjects: false, PreferredPitchDeg: null }, Make);
@@ -882,10 +882,11 @@ Test('2026-10-03 14:47:36: the can refused for the basket at its centre is plann
   Assert.ok(Api.ExactlyReachable(Plan.Grasp, Plan.Pitch, { Servos: Home1003, ElbowMode: 'up', Others: [], Scan: () => null }, Plan.Hover.z), 'the printed point passes the exact reach check');
 });
 
-// The screen of a task object's pitches as PlanGrasp makes it (its centre's steepest reached pitch to level).
+// The screen of a task object's pitches as PlanGrasp makes it (its centre's steepest reached pitch to level), with the fixed
+// jaw's gap of 2026-10-03 (no extra standoff, GraspRules.FixedJawExtraStandoffCm: PlanGrasp screens with none after the full one).
 const Screen1003 = (Frame, Label, Kind) => {
   const Task = Frame.find(Object_ => Object_.label === Label);
-  const Context = { Servos: Home1003, ElbowMode: 'up', Others: Api.NeighbourObjects(Frame, Task).map(Other => Api.GraspPrism(Other)).filter(Boolean),
+  const Context = { Servos: Home1003, ElbowMode: 'up', ExtraStandoffCm: 0, Others: Api.NeighbourObjects(Frame, Task).map(Other => Api.GraspPrism(Other)).filter(Boolean),
     Scan: Point => Api.ReachScan(Point, { Servos: Home1003, ElbowMode: 'up' }).Pitch };
   const Prism = Api.GraspPrism(Task, Kind);
   return Api.ScreenPitches(Prism, Context.Scan(Api.modelPointFromDisplayPoint({ ...Prism.Centre, z: (Prism.BaseZ + Prism.TopZ) / 2 })), Context);
@@ -931,10 +932,16 @@ Test('2026-10-03: a narrower round object where the can stood is planned with th
   const Bottle = Obj('bottle', -3.96, 30.66, -3.37, 8.3, [4.0, 3.8], -3.37, 0.9, { taskMatch: true, refined: true });
   const Planned = Plan_(Bottle);
   Assert.equal(Planned.Kind, 'graspable', Planned.Text);
+  // (With the fixed jaw 2.54 cm farther out, GraspRules.FixedJawExtraStandoffCm, 2026-10-25, its centre is that much farther
+  // across the jaws: the moving jaw reaches 1.8 cm past it, still more than the StraddleCm 1.5 the plan must have; with the
+  // gap as before, 2 cm.)
   const S = Straddle(Planned.Plan);
-  Assert.ok(S.FixedCm >= Rules.StraddleGoodCm - 0.05 && S.MovingCm >= Rules.StraddleGoodCm - 0.05 && S.Centre.x > -0.79, JSON.stringify(S));
+  Assert.equal(Planned.Plan.ExtraStandoffCm, 2.54);
+  Assert.ok(S.FixedCm >= Rules.StraddleGoodCm - 0.05 && S.MovingCm >= Rules.StraddleCm && S.Centre.x > -0.79, JSON.stringify(S));
+  const S0 = Straddle(With({ FixedJawExtraStandoffCm: 0 }, () => Plan_(Bottle)).Plan);
+  Assert.ok(S0.FixedCm >= Rules.StraddleGoodCm - 0.05 && S0.MovingCm >= Rules.StraddleGoodCm - 0.05 && S0.Centre.x > -0.79, JSON.stringify(S0));
   // As planned before 2026-10-03 (no straddle): a fingertip grasp, both jaws under 1 cm past its centre.
-  const Old = Straddle(With({ StraddleRoundObjects: false }, () => Plan_(Bottle)).Plan);
+  const Old = Straddle(With({ StraddleRoundObjects: false, FixedJawExtraStandoffCm: 0 }, () => Plan_(Bottle)).Plan);
   Assert.ok(Math.max(Old.FixedCm, Old.MovingCm) < 1.0, JSON.stringify(Old));
   // A 5.5 cm jar (planned as up to 7.3 cm across: a jar may be wider than it reads): no pitch or height let both jaws reach
   // 1.5 cm past its centre before the palm came within its margin (1.0 cm) of it: refused as too wide, with why. As before

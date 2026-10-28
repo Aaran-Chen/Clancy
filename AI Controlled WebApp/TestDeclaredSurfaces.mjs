@@ -8,6 +8,7 @@ import Assert from 'node:assert/strict';
 import Fs from 'node:fs';
 import Path from 'node:path';
 import { fileURLToPath as FilePath } from 'node:url';
+import { BackendPython } from './UiTestLib.mjs';
 
 const Root = Path.dirname(FilePath(import.meta.url));
 const Backend = Path.join(Root, '../back end');
@@ -60,7 +61,7 @@ Test('the app and the bridge read every case alike', () => {
     Fs.writeFileSync(File, JSON.stringify(Case));
     return File;
   });
-  const Python = Fs.readFileSync(Path.join(Root, '../.backend-python.txt'), 'utf8').replace(/^﻿/, '').trim();
+  const Python = BackendPython();
   const Bridge = JSON.parse(Execute(Python, ['DeclaredSurfaces.py', ...Files], { cwd: Backend, encoding: 'utf8' }));
   Assert.equal(Bridge.length, Cases.length);
   Cases.forEach((Case, Index) => Assert.deepEqual(Api.ValidateSurfaces(Case), Bridge[Index], `case ${Index}: ${JSON.stringify(Case)}`));

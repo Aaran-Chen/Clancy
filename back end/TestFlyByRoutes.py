@@ -12,6 +12,15 @@ from TestSafety import MakeController
 from TestBasketCollision import Place
 from TestBasketRouteOptimization import ObstacleWorld
 
+
+def ProbedPositions(Controller):
+    """A test that probes the route monitor by setting present_raw means the joint really is there. CheckMotionRoute reads
+    a joint off its route again on its own before latching (RouteExitConfirmed, MotorProtection.md round 6), so the bus
+    answers each probed Present_Position too, as a joint really there would."""
+    Read = Controller.bus.read
+    return Patch.object(Controller.bus, "read", lambda Reg, Name, *Args, **Options: (
+        Controller.servos[Name].present_raw if Reg == "Present_Position" else Read(Reg, Name, *Args, **Options)))
+
 # Reported pose: upright beside the mast, shoulder lift at its limit. Clear of the
 # model, but inside the tracking allowance of the mast, so every route was refused.
 BesideMast = {"shoulder_pan": -26.54, "shoulder_lift": 103.54, "elbow_flex": 5.19, "wrist_flex": -37.62,
@@ -124,6 +133,8 @@ def MonitorInsideCertificates(Test, Controller, Send):
     Test.assertLess(len(Route["Tight"]), len(Path) - 1)
     Controller.StopMotion = lambda Reason="", Latch=False: Trips.append(Reason)
     Controller.ConfigurationKey = lambda: Route["Configuration"]
+    Probed = ProbedPositions(Controller)  # the bus answers each probed position
+    Probed.start()
     Widened, Relieved = 0, 0
     for Index, Point in enumerate(Path):
         with Controller.lock:
@@ -169,6 +180,7 @@ def MonitorInsideCertificates(Test, Controller, Send):
                 return all(InsideRegion(*Regions[Check], Relief, Waived if Check == "contact" else 0.0) for Check in Regions)
             Relieved += any(Box[1] for Box in Boxes)
             Test.assertTrue(any(Inside(Box) for Box in Boxes), f"stage {Index}: monitor accepts {Accepted} outside {Boxes}")
+    Probed.stop()
     return Widened, Relieved
 
 
@@ -450,7 +462,7 @@ class FlyByRouteTests(Unittest.TestCase):
         Allowance, Reach = Collision.Model["JointTrackingAllowanceRaw"], Collision.WaypointReachRaw
         Expected = [set(), {"shoulder_pan"}, {"shoulder_pan", "elbow_flex"}, {"shoulder_pan", "elbow_flex"}, set()]
         Trips = []
-        with Controller.lock:
+        with Controller.lock, ProbedPositions(Controller):
             Controller.StartMotionRoute(Path)
             Controller.StopMotion = lambda Reason="", Latch=False: Trips.append(Reason)
             Route = Controller.MotionRoute
@@ -637,7 +649,7 @@ class FlyByRouteTests(Unittest.TestCase):
                   {**Start, "shoulder_pan": Start["shoulder_pan"] + 120, "elbow_flex": Start["elbow_flex"] + 120}]
         Allowance, Reach = Collision.Model["JointTrackingAllowanceRaw"], Collision.WaypointReachRaw
         Trips = []
-        with Controller.lock:
+        with Controller.lock, ProbedPositions(Controller):
             Controller.StartMotionRoute(Collision.RoutePath(Points, Arrive={1}))
             Controller.StopMotion = lambda Reason="", Latch=False: Trips.append(Reason)
             Route = Controller.MotionRoute
@@ -741,7 +753,7 @@ class FlyByRouteTests(Unittest.TestCase):
         Path = Collision.RoutePath(Points, Reach={0: {**dict.fromkeys(Bridge.MOTOR_NAMES, Plain), "shoulder_lift": 66}})
         Past = lambda Steps: Controller.RawAlongTrack("shoulder_lift", Points[0]["shoulder_lift"], Points[1]["shoulder_lift"], Steps / 132)
         Trips = []
-        with Controller.lock:
+        with Controller.lock, ProbedPositions(Controller):
             Controller.StartMotionRoute(Path)
             Controller.StopMotion = lambda Reason="", Latch=False: Trips.append(Reason)
             # The lift brakes for its wide reach, the pan for the plain one.

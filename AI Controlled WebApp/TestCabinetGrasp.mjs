@@ -12,6 +12,7 @@ import { test as Test } from 'node:test';
 import Assert from 'node:assert/strict';
 import Path from 'node:path';
 import { fileURLToPath as FilePath } from 'node:url';
+import { BackendPython } from './UiTestLib.mjs';
 
 const Root = Path.dirname(FilePath(import.meta.url));
 const Backend = Path.join(Root, '..', 'back end');
@@ -19,7 +20,7 @@ const Scenes = Path.join(Backend, 'TestArtifacts', 'CabinetScenesForGrasp');
 const Reply = Name => JSON.parse(ReadFile(Path.join(Scenes, `${Name}.json`), 'utf8'));
 // The replies, written now (about 30 s); its failure (a RECORDING MISSING above all) is this suite's.
 Remove(Scenes, { recursive: true, force: true });
-const Python = ReadFile(Path.join(Root, '..', '.backend-python.txt'), 'utf8').replace(/^\uFEFF/, '').trim();
+const Python = BackendPython();
 let Written = null;
 try {
   Execute(Python, ['-m', 'unittest', 'TestAutomaticScene.CabinetSceneTests.test_moved_clear_of_the_books_nothing_stands_against_the_bottle'],
@@ -67,13 +68,21 @@ Test('the replies are written from the recorded frame by this checkout', () => {
   Assert.equal(Missing, null);
 });
 
-Test('as placed, against the books, the grasp is refused for them with what to do', () => {
+// GRASP ANYTHING (2026-10-22): the books against it no longer refuse it before any search: they are an obstacle, the
+// search finds the way down through space the camera has not observed and the hover out of reach, and the refusal says
+// so with the books against it, and what to do.
+Test('as placed, against the books, the grasp is refused for what blocks it, the books named, with what to do', () => {
   Assert.equal(Missing, null);
   const { Object, Reach } = Grab('recorded');
   Assert.ok(Math.hypot(Object.x + 25.0, Object.y - 40.7) < 1.0 && Math.abs(Object.z - 4.2) < 0.5, JSON.stringify(Object));
   Assert.equal(Reach.Kind, 'ungraspable');
-  Assert.match(Reach.Refusal.Text, /^the camera measured the pill bottle running into observed environment beside it \(at X -2[6-9]\.\d, Y 4[2-4]\.\d, Z 1\d\.\d to 1\d\.\d\), so the two were not measured apart$/);
-  Assert.equal(Reach.Refusal.Advice, 'Move the pill bottle 2 to 3 cm away from what stands beside it, then send the task again.');
+  // With the task's reach taken as empty where unobserved (H2, on since 2026-10-25) the unseen space no longer refuses
+  // it: what the camera saw does, the books against the bottle (the held bottle would touch them, the open jaw meets
+  // what hides under them).
+  Assert.doesNotMatch(Reach.Refusal.Text, /space the depth camera has not observed/);
+  Assert.match(Reach.Refusal.Text, /held pill bottle would touch observed environment|hidden under observed environment/);
+  Assert.match(Reach.Refusal.Text, /; and the camera did not measure it apart from the observed environment against it \(at X -2[6-9]\.\d, Y 4[2-4]\.\d, Z 1\d\.\d to 1\d\.\d\)$/);
+  Assert.match(Reach.Refusal.Advice, / Or move the pill bottle 2 to 3 cm away from what stands against it\.$/);
 });
 
 Test('moved clear of the books, the grasp needs the space the camera cannot see beside the bottle', () => {

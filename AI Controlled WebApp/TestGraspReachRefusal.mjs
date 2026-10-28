@@ -1,11 +1,12 @@
 import { build as Build } from 'esbuild';
-import { existsSync as Existing, readFileSync as ReadFile } from 'node:fs';
+import { readFileSync as ReadFile } from 'node:fs';
 import { execFileSync as Execute } from 'node:child_process';
 import { createRequire as CreateRequire } from 'node:module';
 import { test as Test } from 'node:test';
 import Assert from 'node:assert/strict';
 import Path from 'node:path';
 import { fileURLToPath as FilePath } from 'node:url';
+import { BackendPython } from './UiTestLib.mjs';
 
 // 2026-10-04 08:30-08:32, "Grab the pill bottle" (back end/captures/2026-10-04/recording/ai.jsonl).
 // 08:30:52: the bottle, measured as a "white cup" at X 10.0, Y 32.8 (08:30:35 as a "cable"), was refused:
@@ -231,8 +232,7 @@ const DisplayAffine = Angles => {
 };
 // The gap from a prism to the palm and servo's CAD MESHES (not the planner's hull), from the GLB with trimesh: the mesh
 // surface sampled every 0.02 cm near it, each sample's exact distance to the prism. Servo: the STS3215's mesh alone.
-const PythonPath = Path.join(Root, '../.backend-python.txt');
-const Python = Existing(PythonPath) ? ReadFile(PythonPath, 'utf8').replace(/^﻿/, '').trim() : 'python';
+const Python = BackendPython();
 function MeshGap(Angles, Prism, Servo = false) {
   const Script = `
 import json, sys, numpy as np, trimesh
@@ -278,7 +278,9 @@ Test('ConvexGap: the exact gap between convex shapes, from below; 0 where they m
 
 Test('08:31:44: the deep grasp puts the bottle far deeper in the jaws, its prism near the palm and the STS3215 servo, as the CAD meshes measure it', () => {
   const Frame = TaskFirst(Frame0844, Bottle);
-  const Before = Shallow(() => ReachAs(Frame, 'pill bottle', Home)).Plan, After = ReachAs(Frame, 'pill bottle', Home).Plan;
+  // (Deep against shallow with the fixed jaw's gap as before; with its extra standoff, GraspRules.FixedJawExtraStandoffCm, below.)
+  const OldGap = Make => { const Saved = Api.GraspRules.FixedJawExtraStandoffCm; Api.GraspRules.FixedJawExtraStandoffCm = 0; try { return Make(); } finally { Api.GraspRules.FixedJawExtraStandoffCm = Saved; } };
+  const Before = OldGap(() => Shallow(() => ReachAs(Frame, 'pill bottle', Home))).Plan, After = OldGap(() => ReachAs(Frame, 'pill bottle', Home)).Plan;
   Assert.ok(Before && After && !After.Warnings, 'both plan with every check');
   Assert.equal(Before.Deep, undefined);
   Assert.equal(After.Deep, true);
@@ -289,6 +291,12 @@ Test('08:31:44: the deep grasp puts the bottle far deeper in the jaws, its prism
   Assert.ok(After.PalmGapCm >= Api.GraspRules.PalmGapCm - 0.01 && After.PalmGapCm <= 0.9, `${After.PalmGapCm}`);
   Assert.ok(After.Closing.DepthOffsetCm - Before.Closing.DepthOffsetCm >= 1.5, `${Before.Closing.DepthOffsetCm} -> ${After.Closing.DepthOffsetCm}`);
   Assert.ok(Math.min(After.Straddle.FixedCm, After.Straddle.MovingCm) >= 3, JSON.stringify(After.Straddle));
+  // With the fixed jaw 2.54 cm farther out (the full extra fits): deep with every check still, at wrist -26.4, the palm 1.1 cm from
+  // it (the arm reaches no deeper there), the moving jaw 2.2 cm past its centre (more than StraddleCm), the fixed one 3.0.
+  const Standoff = ReachAs(Frame, 'pill bottle', Home).Plan;
+  Assert.ok(Standoff.Deep && !Standoff.Warnings && Standoff.ExtraStandoffCm === 2.54, JSON.stringify([Standoff.Deep, Standoff.Warnings, Standoff.ExtraStandoffCm]));
+  Assert.ok(Standoff.PalmGapCm >= Api.GraspRules.PalmGapCm - 0.01 && Standoff.PalmGapCm <= 1.2, `${Standoff.PalmGapCm}`);
+  Assert.ok(Math.min(Standoff.Straddle.FixedCm, Standoff.Straddle.MovingCm) >= Api.GraspRules.StraddleCm, JSON.stringify(Standoff.Straddle));
   // Measured on the CAD meshes (trimesh, the GLB) where the printed grasp point's jaws close: the planner's hull gap is never
   // more than the meshes', and within 0.12 cm of it; the plan's own (at its unrounded pose) within the rounding of it.
   const Pose = ClosePose(After);

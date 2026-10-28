@@ -17,18 +17,25 @@ L4  the emergency stop reads its torque-off back.
 S4  the control loop survives a coast that fails too.
 L3  a late or long control frame is recorded with what it waited for; a stalled one dumps every stack, with its time.
 A2  the bridge reports the code version the page and RestartBridge.ps1 require.
+(2026-10-25 stalls) no file is read under the motor lock; a depth-camera open and a motion never overlap; no motion
+    during the startup warm-up (the check workers' start and the camera's first open).
 
 Run:  python TestAuditSafety.py
 """
+import asyncio
 import json
 import os
 import shutil
+import sys
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import numpy as np
 
 os.environ.setdefault("SO101_DEPTH_CAMERA", "0")
 os.environ.setdefault("SO101_RECORDER", "0")
@@ -39,6 +46,7 @@ import SceneSafety  # noqa: E402
 import bridge_server as Bridge  # noqa: E402
 import calibration  # noqa: E402
 import LoadScale  # noqa: E402
+import OrbbecCamera  # noqa: E402
 from TestSafety import LocalClient, MakeController  # noqa: E402
 from test_bridge_home import FakeBus  # noqa: E402
 
@@ -716,6 +724,337 @@ class LockTests(unittest.TestCase):
         Self.assertTrue(Owners)
         Self.assertNotIn(threading.current_thread().name, Owners, "the deep copy ran while this thread held the motor lock")
 
+    def ScratchFrame(Self):
+        """WorkspaceFrame.json copied to a scratch folder, read by the bridge from there (its own JsonFileCache)."""
+        Scratch = Path(tempfile.mkdtemp(prefix="TestAuditFrame"))
+        Self.addCleanup(shutil.rmtree, Scratch, True)
+        File = Scratch / "WorkspaceFrame.json"
+        shutil.copy(Root / "WorkspaceFrame.json", File)
+        Cache = Bridge.JsonFileCache(File)
+        Patch = patch.object(Bridge, "WorkspaceFrameFile", Cache)
+        Patch.start()
+        Self.addCleanup(Patch.stop)
+        return File, Cache
+
+    @staticmethod
+    def SlowDisk(Seconds):
+        """Every stat, open and read Seconds slow (2026-10-19: one waited 1.7 s while the recorder wrote video)."""
+        def Slow(Original):
+            def Wrapped(*Args, **Options):
+                time.sleep(Seconds)
+                return Original(*Args, **Options)
+            return Wrapped
+        return [patch.object(Path, "stat", Slow(Path.stat)), patch.object(Path, "read_text", Slow(Path.read_text)),
+                patch.object(Path, "read_bytes", Slow(Path.read_bytes)), patch("builtins.open", Slow(open))]
+
+    def TestNoFileIsReadUnderTheMotorLock(Self):
+        # 2026-10-19T00:06:44Z: a control frame waited 1719 ms for the motor lock, held by a WebSocket client's state
+        # snapshot reading WorkspaceFrame.json (ConfigurationKey, WorkspaceOffset); a route read it every frame too.
+        Controller, Bus = MakeController()
+        File, Cache = Self.ScratchFrame()
+        Controller.state_snapshot()
+        Before = Controller.state_snapshot()["workspace_offset"]
+        Frame = json.loads(File.read_text(encoding="utf-8"))
+        Frame["RobotFrame"]["ArmBasePositionCm"]["x"] += 1.0
+        File.write_text(json.dumps(Frame, indent=2) + "\n", encoding="utf-8")  # an edit the next snapshot must see
+        Controller.lock.Holds.clear()
+        Snapshots, Took, Stop = [], [], threading.Event()
+
+        def Client():  # one page at 30 Hz, its snapshots on their own thread as the bridge's asyncio.to_thread
+            while not Stop.is_set():
+                Snapshots.append(Controller.state_snapshot())
+                time.sleep(1 / 30)
+        Slow = Self.SlowDisk(0.3)
+        for Each in Slow:
+            Each.start()
+        try:
+            Edited = Controller.state_snapshot()  # reads the edited file (three slow accesses), off the lock
+            Controller.refresh()  # the control loop's frame meanwhile (the heartbeat counts from it)
+            Thread = threading.Thread(target=Client, name="asyncio_0")
+            Thread.start()
+            Self.assertTrue(GripperRoute(Controller)[0])
+            for _ in range(30):  # one second of control frames, a route running, against the client's snapshots
+                for Name in Bridge.MOTOR_NAMES:
+                    Bus.step(Name, steps_per_tick=2)
+                Start = time.perf_counter()
+                Controller.refresh()
+                Took.append(time.perf_counter() - Start)
+                time.sleep(1 / 30)
+        finally:
+            Stop.set()
+            Thread.join()
+            for Each in reversed(Slow):
+                Each.stop()
+        Self.assertGreater(len(Snapshots), 1)
+        Self.assertAlmostEqual(Edited["workspace_offset"]["x"], Before["x"] - 1.0, msg="the edited frame was read")
+        Self.assertEqual(Snapshots[-1]["configuration_key"], Edited["configuration_key"])
+        Self.assertIsNotNone(Controller.MotionRoute, Controller.status)  # the route ran on: the edit came before it
+        Self.assertIsNone(Controller.ProtectionTrip)
+        Scale = LoadScale.Factor()
+        # The motor lock's own record keeps every hold over ControlLockHoldNoteS (50 ms): there is none.
+        Self.assertEqual([Hold for Hold in Controller.lock.Holds], [], "a hold of the motor lock over 50 ms")
+        Self.assertLess(max(Took), 0.05 * Scale, f"a control frame took {max(Took) * 1000:.0f} ms (load x{Scale:.2f})")
+
+    def TestFrameEditedMidRouteStillStopsTheRouteHolding(Self):
+        # What CheckMotionRoute read from disk every frame, it now takes from the last read: the running server's
+        # WatchFiles (and every state snapshot) reads the edit, and the route stops holding, as before.
+        Controller, Bus = MakeController()
+        File, Cache = Self.ScratchFrame()
+        Self.assertTrue(GripperRoute(Controller)[0])
+        Frames(Controller, Bus, 2, Step=2)
+        Frame = json.loads(File.read_text(encoding="utf-8"))
+        Frame["RobotFrame"]["ArmBasePositionCm"]["x"] += 1.0
+        File.write_text(json.dumps(Frame, indent=2) + "\n", encoding="utf-8")
+        Frames(Controller, Bus, 1, Step=2)
+        Self.assertIsNotNone(Controller.MotionRoute, "a control frame reads no file")
+        Cache.Refresh()  # as WatchFiles does every FileWatchS
+        Frames(Controller, Bus, 1, Step=2)
+        Holding(Self, Controller, Bus)
+        Self.assertIn("configuration", Controller.status)
+
+    def TestFrameCacheReadsAgainOnlyWhenTheFileChanged(Self):
+        File, Cache = Self.ScratchFrame()
+        Reads = []
+        Original = Bridge._load_json
+        with patch.object(Bridge, "_load_json", lambda Path_: Reads.append(Path_) or Original(Path_)):
+            First = Cache.Refresh()
+            Self.assertIs(Cache.Refresh(), First)
+            Self.assertIs(Cache.Data(), First)
+            Self.assertEqual(len(Reads), 1, "an unchanged file is not read again")
+            File.write_text(File.read_text(encoding="utf-8") + " ", encoding="utf-8")  # one byte longer
+            Self.assertIsNot(Cache.Refresh(), First)
+            Self.assertEqual(len(Reads), 2)
+            File.write_text("{ half written", encoding="utf-8")
+            Self.assertEqual(Cache.Refresh(), {})
+            Self.assertEqual(Cache.Refresh(), {})
+            Self.assertEqual(len(Reads), 4, "a read that did not parse is tried again")
+        Copy = Bridge.WorkspaceFrame()
+        Copy["changed"] = True
+        Self.assertNotIn("changed", Cache.Data(), "WorkspaceFrame() hands out a copy")
+
+
+def WaitFor(Condition, Seconds=5.0):
+    Deadline = time.monotonic() + Seconds
+    while time.monotonic() < Deadline:
+        if Condition():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+class CameraSource:
+    """A depth camera whose open (the SDK's 1-7 s with the interpreter lock held) lasts until Release is set."""
+
+    def __init__(Self, Opens, Release):
+        Opens.append(time.monotonic())
+        Release.wait(5.0)
+        Self.Info, Self.Intrinsics = {"name": "fake"}, {"fx": 1.0}
+
+    def Read(Self, TimeoutMs=500):
+        time.sleep(0.01)
+        return np.zeros((4, 4, 3), np.uint8), np.zeros((4, 4), np.uint16)
+
+    def Close(Self):
+        pass
+
+
+class CameraInterlockTests(unittest.TestCase):
+    """2026-10-25: a depth-camera open and a motion never overlap (ad5a7a8 only skipped opens while the arm moved, so an
+    open begun just before a route froze the control loop under it, velocity-mode joints unsupervised)."""
+
+    def setUp(Self):
+        # SO101_DEPTH_CAMERA=0 makes Start a no-op; the real SDK cannot even be imported here (as TestDepthCamera).
+        for Item in (patch.dict(os.environ, {"SO101_DEPTH_CAMERA": "1"}), patch.dict(sys.modules, {"pyorbbecsdk": None}),
+                     patch.object(OrbbecCamera, "QuietPollS", 0.02)):
+            Item.start()
+            Self.addCleanup(Item.stop)
+        Self.Controller, Self.Bus = MakeController()
+        Self.Opens, Self.Release = [], threading.Event()
+        Self.Camera = OrbbecCamera.DepthCamera(Opener=lambda: CameraSource(Self.Opens, Self.Release))
+        # As the running server wires them (bridge_server: depth_camera.Quiet, controller.Camera).
+        Self.Camera.Quiet = Self.Controller.CameraMustWait
+        Self.Controller.Camera = Self.Camera
+        Self.addCleanup(Self.Camera.Stop)
+        Self.addCleanup(Self.Release.set)  # runs first: an open still waiting ends
+
+    def TestNoMotionStartsWhileTheCameraOpens(Self):
+        Controller = Self.Controller
+        Self.Camera.Start()
+        Self.assertTrue(WaitFor(lambda: Self.Camera.Opening))
+        with patch.object(Bridge, "CameraOpenWaitS", 0.2):
+            Ok, Text = GripperRoute(Controller)
+        Self.assertFalse(Ok)
+        Self.assertIn("depth camera opens", Text)
+        Self.assertIsNone(Controller.MotionRoute)
+        Self.assertIsNone(Controller.MotionFault, "refused, not latched")
+        Self.assertFalse([W for W in Self.Bus.writes if W[0] in ("Goal_Speed", "Operating_Mode")], "nothing was written")
+        Ok, Text = Controller.HandGuideBegin(None, {}, "unused")
+        Self.assertFalse(Ok)
+        Self.assertIn("Hand guiding not started: Cannot move while the depth camera opens", Text)
+        Self.assertIsNone(Controller.HandGuide)
+
+    def TestAMotionAskedForDuringAnOpenStartsAfterIt(Self):
+        Self.Camera.Start()
+        Self.assertTrue(WaitFor(lambda: Self.Camera.Opening))
+        Ended = []
+
+        def Finish():
+            time.sleep(0.3)
+            Ended.append(time.monotonic())
+            Self.Release.set()
+        threading.Thread(target=Finish).start()
+        Ok, Text = GripperRoute(Self.Controller)  # waits, off the motor lock, for the open (CameraOpenWaitS)
+        Self.assertTrue(Ok, Text)
+        Self.assertGreaterEqual(Self.Controller.MotionStartedAt, Ended[0], "the route started after the open ended")
+        Self.assertEqual(len(Self.Opens), 1)
+
+    def TestNoOpenWhileARouteRuns(Self):
+        Controller, Bus = Self.Controller, Self.Bus
+        Self.assertTrue(GripperRoute(Controller)[0])
+        Self.Release.set()  # an open would end at once
+        Self.Camera.Start()
+        for _ in range(5):
+            Frames(Controller, Bus, 1, Step=2)
+            time.sleep(0.03)
+        Self.assertIsNotNone(Controller.MotionRoute)
+        Self.assertEqual(Self.Opens, [], "no open while the route runs")
+        Frames(Controller, Bus, 120)
+        Self.assertIsNone(Controller.MotionRoute, Controller.status)
+        Self.assertTrue(WaitFor(lambda: Self.Opens), "it opens once the route ended")
+
+    def TestNoOpenWhileARouteIsChecked(Self):
+        # A route about to start: from the command, through planning (seconds on the arm), to its start.
+        Self.Release.set()
+        Original = Bridge.BridgeController.PlanMotionRoute
+        Planning = threading.Event()
+
+        def Slow(Snapshot, *Args, **Options):
+            Planning.set()
+            time.sleep(0.4)
+            return Original(Snapshot, *Args, **Options)
+        Result = []
+        with patch.object(Bridge.BridgeController, "PlanMotionRoute", Slow):
+            Thread = threading.Thread(target=lambda: Result.append(GripperRoute(Self.Controller)))
+            Thread.start()
+            Self.assertTrue(Planning.wait(5.0))
+            Self.Camera.Start()  # its first check comes while the route is planned
+            Thread.join()
+        Self.assertTrue(Result and Result[0][0], Result)
+        time.sleep(0.1)
+        Self.assertIsNotNone(Self.Controller.MotionRoute)
+        Self.assertEqual(Self.Opens, [], "no open while the route was planned, nor since it started")
+
+    def TestAnOpenCheckingAsTheRouteStartsWaitsForIt(Self):
+        # The gap ad5a7a8 left: the open's check passes, then a route starts, then the open runs under it. The camera's
+        # check now waits for the bridge's MotionStartGate, held from the route's last check to its start; here alone,
+        # without the planning registration (MotionsStarting) that keeps the camera quiet before it.
+        Self.Release.set()
+        Original = Bridge.BridgeController.StartMotionRoute
+        Checked, Threads = [], []
+
+        def Start(Controller_, *Args, **Options):
+            Controller_.MotionsStarting.clear()
+            Thread = threading.Thread(target=lambda: Checked.append(Self.Camera._BeginOpen()))
+            Thread.start()
+            Thread.join(0.2)
+            Checked.append("waiting" if Thread.is_alive() else "passed")
+            Threads.append(Thread)
+            return Original(Controller_, *Args, **Options)
+        with patch.object(Bridge.BridgeController, "StartMotionRoute", Start):
+            Ok, Text = GripperRoute(Self.Controller)
+        Self.assertTrue(Ok, Text)
+        Threads[0].join(2.0)
+        Self.assertEqual(Checked, ["waiting", False], "the open waited for the start, then saw the route and did not open")
+        Self.assertFalse(Self.Camera.Opening)
+
+    def TestAFailedOpenIsNotOpeningWhileItBacksOff(Self):
+        def Missing():
+            Self.Opens.append(time.monotonic())
+            raise RuntimeError("no Orbbec camera connected")
+        Self.Camera.Opener = Missing
+        Self.Camera.Start()
+        Self.assertTrue(WaitFor(lambda: Self.Opens and Self.Camera.Error))
+        Self.assertFalse(Self.Camera.Opening, "a route may start during the backoff")
+        Self.assertTrue(GripperRoute(Self.Controller)[0])
+
+
+class StartupWarmUpTests(unittest.TestCase):
+    """2026-10-25 15:07:39, 19:01:13, 19:31:52: a 6.1-6.8 s stall about 6 s after each bridge start, while RouteCheckPool
+    spawned its workers and the camera made its first open. No motion starts until both have ended."""
+
+    def setUp(Self):
+        for Item in (patch.dict(os.environ, {"SO101_DEPTH_CAMERA": "1"}), patch.dict(sys.modules, {"pyorbbecsdk": None})):
+            Item.start()
+            Self.addCleanup(Item.stop)
+
+    def TestNoMotionUntilTheWorkersAndTheCameraStarted(Self):
+        Controller, Bus = MakeController()
+        Pool, Camera = SimpleNamespace(Started=threading.Event()), OrbbecCamera.DepthCamera(Opener=lambda: None)
+        Controller.WarmUp = lambda: Bridge.StartupPending(Pool, Camera)  # as the server's lifespan sets it
+        Refusals = {"a joint move": lambda: GripperRoute(Controller), "Home": Controller.go_home,
+                    "a Cartesian move": lambda: Controller.send_ik(Target=dict(Controller.target_cm)),
+                    "hand guiding": lambda: Controller.HandGuideBegin(None, {}, "unused")}
+        for Name, Move in Refusals.items():
+            with Self.subTest(Name):
+                Ok, Text = Move()
+                Self.assertFalse(Ok)
+                Self.assertIn("the bridge is still starting (route check workers and the depth camera)", Text)
+        Self.assertIsNone(Controller.MotionRoute)
+        Self.assertIsNone(Controller.HandGuide)
+        Self.assertIsNone(Controller.MotionFault, "refused, nothing latched")
+        Self.assertFalse([W for W in Bus.writes if W[0] in ("Goal_Speed", "Operating_Mode")], "nothing was written")
+        Pool.Started.set()
+        Ok, Text = GripperRoute(Controller)
+        Self.assertFalse(Ok)
+        Self.assertIn("still starting (the depth camera)", Text)
+        Camera.FirstOpenDone.set()
+        Ok, Text = GripperRoute(Controller)
+        Self.assertTrue(Ok, Text)
+        Self.assertIsNotNone(Controller.MotionRoute)
+
+    def TestTheCameraFirstOpenEndsTheWarmUpHoweverItEnds(Self):
+        Gate = threading.Event()
+
+        def Missing():
+            Gate.wait(5.0)
+            raise RuntimeError("no Orbbec camera connected")
+        Camera = OrbbecCamera.DepthCamera(Opener=Missing)
+        Camera.Start()
+        Self.addCleanup(Camera.Stop)
+        time.sleep(0.1)
+        Self.assertFalse(Camera.FirstOpenDone.is_set(), "still opening")
+        Gate.set()
+        Self.assertTrue(Camera.FirstOpenDone.wait(2.0), "a failed first open ends it too")
+        with patch.dict(os.environ, {"SO101_DEPTH_CAMERA": "0"}):
+            Off = OrbbecCamera.DepthCamera(Opener=Missing)
+            Off.Start()
+            Self.assertTrue(Off.FirstOpenDone.is_set(), "a camera that is off never holds motion back")
+        Self.assertIsNone(Bridge.StartupPending(None, Off), "no check workers started (a sandbox): none to wait for")
+
+    def TestTheServerStartsWarmingUp(Self):
+        Controller, Bus = MakeController()
+        Pool = SimpleNamespace(Started=threading.Event())
+        Camera = SimpleNamespace(Start=lambda: None, Stop=lambda: None, FirstOpenDone=threading.Event(), Opening=False)
+        Seen = []
+
+        class Loop:
+            def start(Self_): pass
+            def stop(Self_): pass
+
+        async def Run():
+            with patch.object(Bridge, "controller", Controller), patch.object(Bridge, "control_loop", Loop()), \
+                    patch.object(Bridge, "depth_camera", Camera), patch.object(Bridge, "AppendBridgeEvent", lambda Record: None), \
+                    patch.object(Bridge, "RaiseProcessPriority", lambda: "normal"), \
+                    patch.object(Bridge.RouteChecks, "Start", lambda: Pool), patch.object(Bridge, "WatchFiles", lambda: None):
+                async with Bridge._lifespan(Bridge.app):
+                    Seen.append(Controller.MotionStartRefusal())
+                    Pool.Started.set()
+                    Camera.FirstOpenDone.set()
+                    Seen.append(Controller.MotionStartRefusal())
+        asyncio.run(Run())
+        Self.assertIn("still starting (route check workers and the depth camera)", Seen[0])
+        Self.assertIsNone(Seen[1])
+
 
 class InputTests(unittest.TestCase):
     """M7, L4, S4, L3 and the version handshake."""
@@ -848,13 +1187,15 @@ def load_tests(Loader, Tests, Pattern):
     Prefixed = unittest.TestLoader()
     Prefixed.testMethodPrefix = "Test"
     return unittest.TestSuite(Prefixed.loadTestsFromTestCase(Case) for Case in
-                              (SceneRouteTests, ConfigurationTests, WindowMiddleTests, GraspTests, ConnectTests, PreemptionTests, LockTests, InputTests))
+                              (SceneRouteTests, ConfigurationTests, WindowMiddleTests, GraspTests, ConnectTests, PreemptionTests, LockTests,
+                                CameraInterlockTests, StartupWarmUpTests, InputTests))
 
 
 if __name__ == "__main__":
     Loader = unittest.TestLoader()
     Loader.testMethodPrefix = "Test"
     Suite = unittest.TestSuite(Loader.loadTestsFromTestCase(Case) for Case in
-                               (SceneRouteTests, ConfigurationTests, WindowMiddleTests, GraspTests, ConnectTests, PreemptionTests, LockTests, InputTests))
+                               (SceneRouteTests, ConfigurationTests, WindowMiddleTests, GraspTests, ConnectTests, PreemptionTests, LockTests,
+                                CameraInterlockTests, StartupWarmUpTests, InputTests))
     Result = unittest.TextTestRunner(verbosity=2).run(Suite)
     raise SystemExit(not Result.wasSuccessful())

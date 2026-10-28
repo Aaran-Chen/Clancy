@@ -52,6 +52,13 @@ def StartedPool(Count):
     return Pool
 
 
+def ForgetAnswers():
+    """Empty the surfaces' answer memo (BasketSurface.Surface.Overlaps): a repeat of the very same request is answered
+    from it, which is not what planning costs. Timed plans here start without it, alone and with the workers alike."""
+    for Surface in [*Collision.Surfaces.values(), *Collision.BodySurfaces.values()]:
+        Surface.Memo = {}
+
+
 def Plan(Start, Target, Gripper=None):
     Controller, Bus = MakeController()
     PlaceRaw(Controller, Bus, Start)
@@ -92,32 +99,36 @@ class RouteCheckPoolTests(Unittest.TestCase):
         Cases = [(Raw1531, Hover1531, Open1531), (Raw1532, Descent1532, None)]
         Alone = []
         # Each plan timed twice, the faster kept, alone and with the workers alike: a plan that other work on the PC
-        # interrupted is not its cost (audit 1 L5), and the workers must win on a busy PC as on an idle one.
+        # interrupted is not its cost (audit 1 L5), and the workers must win on a busy PC as on an idle one. Every
+        # timed plan starts with no remembered answers (ForgetAnswers), and each with the workers on a new pool, so
+        # neither way is timed answering a request it has seen.
         for Case in Cases:
             Timed = []
             for _ in range(2):
+                ForgetAnswers()
                 Began = Time.perf_counter()
                 Result = Plan(*Case)
                 Timed.append(Time.perf_counter() - Began)
             Alone.append((Result, min(Timed)))
-        Pool = StartedPool(8)
-        Self.addCleanup(Pool.Close)
         Asked = []
-        Submit = Pool.Submit
-        Pool.Submit = lambda Request, Deadline: Asked.append(Request) or Submit(Request, Deadline)
-        with Patch.object(RouteCheckPool, "_Pool", Pool):
-            Self.assertIs(RouteCheckPool.Running(), Pool)
-            for Case, ((Ok, Message, _, Route), Seconds) in zip(Cases, Alone):
-                Self.assertTrue(Ok, Message)
-                Timed = []
-                for _ in range(2):
+        for Case, ((Ok, Message, _, Route), Seconds) in zip(Cases, Alone):
+            Self.assertTrue(Ok, Message)
+            Timed = []
+            for _ in range(2):
+                Pool = StartedPool(8)
+                Self.addCleanup(Pool.Close)
+                Submit = Pool.Submit
+                Pool.Submit = lambda Request, Deadline, Submit=Submit: Asked.append(Request) or Submit(Request, Deadline)
+                with Patch.object(RouteCheckPool, "_Pool", Pool):
+                    Self.assertIs(RouteCheckPool.Running(), Pool)
+                    ForgetAnswers()
                     Began = Time.perf_counter()
                     Again = Plan(*Case)
                     Timed.append(Time.perf_counter() - Began)
-                Parallel = min(Timed)
+                Pool.Close()
                 Self.assertTrue(Again[0], Again[1])
                 Self.assertEqual(Again[3], Route)
-                Self.assertLess(Parallel, Seconds, "planning is quicker with the workers")
+            Self.assertLess(min(Timed), Seconds, "planning is quicker with the workers")
         Self.assertGreater(len(Asked), 10)
         # The CAD-exact contact model (v8) left the descent no arrive waypoint (two under v7's tracking envelope).
         Self.assertEqual(Alone[1][0][3][2], [], "the descent has no arrive waypoint")

@@ -1,4 +1,4 @@
 {
-  "Version": "single-call-locate-2026-10-18",
+  "Version": "faster-routes-shelf-support-2026-10-27",
   "Note": "The bridge's code contract with the page. Bump Version whenever bridge behaviour the page relies on changes. The bridge reports it (bridge_version in /health and the state), the page requires the value it was built with (src/lib/BridgeCommandGate.ts BridgeUpdateReason) and RestartBridge.ps1 waits for it, so a bridge still running older code is named loudly instead of passing every older version check."
 }

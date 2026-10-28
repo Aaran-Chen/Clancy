@@ -14,6 +14,17 @@ desk path's roll-gated tape judges), and no arm pose. The recorded captures stay
 in a git worktree, the main checkout's) and the calibration is its tracked copy; without the recordings this fails,
 RECORDING MISSING, and without git (the old commit's code) it fails too: it no longer skips.
 
+Since occluded-desk-check-2026-10-22 two changes are allowed, and only where they apply (AssertOnlyTheOcclusionAndRollChanges):
+the cells the arm covers count neither way, which moves the desk's numbers wherever the arm hides some of it (no verdict
+among these captures changes for it), and where the desk path's tape stopped at the wrist roll the roll-aware tape judges.
+Each case is judged with no clear view of the desk remembered from the one before (CameraDrift.SessionChange): the arm
+and model variants of one capture are no session. None of these captures reaches the occluded gates.
+
+Since robot-verified-camera-2026-10-25 a desk in view that disagrees and that the cart-move path could not explain
+(CameraDrift._DeskDiffers) is decided by the robot's witnesses (robot_mode "desk_differs"); there the desk path's result
+rides along as desk_check, as before but for the two changes above. A desk pass may carry a rim record
+(RobotReference.RimRecordKey), left out of the comparison like the shadow.
+
 Run:  python TestDeskGateGolden.py
 """
 import datetime
@@ -92,7 +103,7 @@ def Normal(Value, Key=None):
     """A camera_check as compared: timing fields and the shadow out, the re-measure's clock out, NaN as text."""
     if isinstance(Value, dict):
         return {K: Normal(V, K) for K, V in Value.items()
-                if K not in Timing and K != RR.ShadowKey and not (Key == CD.RemeasuredKey and K in RemeasureClock)}
+                if K not in Timing and K not in (RR.ShadowKey, RR.RimRecordKey) and not (Key == CD.RemeasuredKey and K in RemeasureClock)}
     if isinstance(Value, (list, tuple)):
         return [Normal(V) for V in Value]
     if isinstance(Value, (np.floating, float)):
@@ -249,33 +260,86 @@ class DeskGateGoldenTests(unittest.TestCase):
                 Image = cv2.flip(Image, 1)
             # The RGB keyframe match (0.3 s a capture, advisory) runs on the live calibration with the recorded arm only.
             Keyframe = Real if (Case["model"], Case["arm_key"]) == ("live", "recorded") else (lambda *Arguments: None)
+            # Each case judged on its own: no clear view of the desk kept from the one before (CameraDrift.SessionChange; the
+            # arm and model variants of one capture are not a session).
+            CD.ForgetSessionFrames()
             with patch.object(RobotCameraReference, "Check", Keyframe):
                 Class.New[Case["id"]] = CD.CheckCapture(Depth, Class.Intrinsics, Class.Models[Case["model"]], Case["seq"], Image, Case["arm"])
         print(f"  this checkout replayed {len(Class.Cases)} cases in {time.time() - Started:.0f} s")
 
+    def AssertOnlyTheOcclusionAndRollChanges(Self, Old, New):
+        """Old and New equal key for key but for the two changes of occluded-desk-check-2026-10-22 (CameraDrift's
+        module notes, "The arm over the desk"); which of them applied ("" for none, the result exactly as before):
+        - "occlusion": the cells the arm covers stay out of the fit (desk_occluded_cells; desk_hidden_cells those not seen
+          as desk), so the desk's numbers move;
+          the verdict stays the old one, or the desk passes as matching where it is visible (desk_occluded);
+        - "roll-aware": the old tape stopped at the wrist roll (its reason now tape_roll_gated_reason) and the roll-aware
+          tape judged instead. Where the desk passed the verdict stays; in the cart-move path a desk_changed_unverified
+          may become a re-measured desk (the tape where the rolled gripper puts it) or camera_moved (the tape off it)."""
+        if New == Old:
+            return ""
+        Kinds, Desk, Tape = [], {"angle_deg", "offset_cm", "desk_cells", "desk_agreeing_share", "desk_occluded_cells", "desk_hidden_cells", "desk_beneath_share", "desk_beneath_of_desk_share", "desk_session", "desk_change", "reason", "error", CD.RemeasuredKey}, set()
+        if New.get("desk_occluded_cells") or (New.get("desk_change") or {}).get("occluded_cells"):
+            Kinds.append("occlusion")
+        if "tape_roll_gated_reason" in New:
+            Kinds.append("roll-aware")
+            Self.assertEqual((Old.get("tape_check"), Old.get("tape_reason")), ("pose_differs", New["tape_roll_gated_reason"]))
+            Self.assertTrue(Old["tape_reason"].startswith("wrist_roll"))
+            Tape = {Key for Key in set(Old) | set(New) if Key.startswith("tape_")} | {"error", "reason"}
+        Self.assertTrue(Kinds, "the result changed with neither the arm's cells nor the roll-aware tape to explain it")
+        Verdict = lambda Value: (Value["ok"], Value.get("error_code"))
+        if Verdict(New) != Verdict(Old):
+            if New.get("desk_occluded"):
+                Self.assertEqual(Verdict(New), (True, None))
+            else:
+                Self.assertIn("roll-aware", Kinds)
+                Self.assertEqual(Old.get("error_code"), "desk_changed_unverified", (Old, New))
+                Self.assertTrue((New["ok"] and New.get("desk_remeasured") and New["tape_check"] == "ok")
+                                or (New.get("error_code"), New["tape_check"]) == ("camera_moved", "moved"), New)
+                Tape |= {"ok", "error_code", "desk_remeasured", CD.RemeasuredKey, "plane_angle_deg", "desk_agreeing_share", "angle_deg", "offset_cm",
+                         "desk_cells", "desk_change"}
+        Allowed = (Desk if "occlusion" in Kinds else set()) | Tape | ({"desk_occluded", "desk_agreeing_share_unhidden", "desk_beneath_share", "desk_beneath_of_desk_share", "desk_session", "reason"} if New.get("desk_occluded") else set())
+        Self.assertEqual({Key: Value for Key, Value in New.items() if Key not in Allowed},
+                         {Key: Value for Key, Value in Old.items() if Key not in Allowed})
+        return "+".join(Kinds) + (": verdict changed" if Verdict(New) != Verdict(Old) else "")
+
     def TestEveryCaptureWithTheDeskInViewIsUnchanged(Self):
-        Present, Absent = 0, {}
+        Present, Absent, Altered, Differs = 0, {}, {}, {}
         for Case in Self.Cases:
             Old, New = Self.Old[Case["id"]], Self.New[Case["id"]]
             Row = Self.Rows[Case["row"]]
             with Self.subTest(capture=Row["time"], model=Case["model"], arm=Case["arm_key"]):
-                if New.get("alignment_source") == "robot":
+                if New.get("robot_mode") == RR.DeskDiffers:
+                    # A desk in view that disagrees, which the cart-move path could not explain (robot-verified-camera-2026-10-25):
+                    # the robot's witnesses decided, the desk path's block (as before, but for the changes named) rides along.
+                    Self.assertTrue(CD._DeskDiffers(New["desk_check"]), New["desk_check"])
+                    Self.assertFalse(Old["ok"])
+                    Self.assertNotEqual(Old.get("tape_check"), "moved")
+                    Self.AssertOnlyTheOcclusionAndRollChanges(Old, Normal(New["desk_check"]))
+                    Differs[(Row["time"][:16], Case["model"], Case["arm_key"])] = (New["robot_check"], New.get("tape_error_cm"), New.get("rim_check"))
+                elif New.get("alignment_source") == "robot":
                     # The calibrated desk out of view: the old result rides along unchanged as desk_check.
                     Self.assertEqual(Normal(New["desk_check"]), Old)
                     Self.assertFalse(Old["ok"])
                     Self.assertNotEqual(Old.get("error_code"), "camera_moved")
                     Absent[(Row["time"][:16], Case["model"], Case["arm_key"])] = (New["robot_check"], New.get("tape_error_cm"))
                 else:
-                    Self.assertEqual(Normal(New), Old)
+                    Changed = Self.AssertOnlyTheOcclusionAndRollChanges(Old, Normal(New))
+                    if Changed:
+                        Altered[Changed] = Altered.get(Changed, 0) + 1
                     Self.assertIn(RR.ShadowKey, New)
                     Present += 1
         # As live, exactly the recorded no-desk captures go to the robot. (On the desk the calibration was fitted
         # on, before the 2026-10-03 cart move, a capture may see too little of it as well; checked the same way.)
         Self.assertEqual({Clock for Clock, ModelKey, _ in Absent if ModelKey == "live"}, NoDeskCaptures, Absent)
-        print(f"  {len(Self.Rows)} captures, {len(Self.Cases)} cases: {Present} with the desk deciding, unchanged key for key; "
-              f"{len(Absent)} with no calibrated desk in view:")
+        print(f"  {len(Self.Rows)} captures, {len(Self.Cases)} cases: {Present} with the desk deciding, as before key for key but for the changes named; "
+              f"{len(Absent)} with no calibrated desk in view; changed as occluded-desk-check-2026-10-22 means to: {Altered}")
+        print("  no calibrated desk in view:")
         for (Clock, ModelKey, ArmKey), (Verdict, Error) in sorted(Absent.items()):
             print(f"    {Clock}Z  {ModelKey:6s} {ArmKey:16s} -> {Verdict}" + (f" (tape {Error} cm)" if Error is not None else ""))
+        print(f"  a desk in view that disagrees, decided by the robot: {len(Differs)}")
+        for (Clock, ModelKey, ArmKey), (Verdict, Error, Rim) in sorted(Differs.items()):
+            print(f"    {Clock}Z  {ModelKey:6s} {ArmKey:16s} -> {Verdict} (tape {Error} cm, rim {Rim})")
 
     def TestTheLiveReplayMatchesWhatTheBridgeRecorded(Self):
         # With the arm as recorded, the old code reproduces the camera_check each locate recorded (where the

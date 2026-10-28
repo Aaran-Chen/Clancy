@@ -2,14 +2,13 @@
 // TargetSnapLimitMs). A wrist angle that cannot reach turns to one that can, keeping the
 // position; a position nothing can reach is pulled back along the edit to the reachable edge. Bridge faked.
 import { chromium as Chromium } from "playwright";
-import { LaunchOptions, StartUiServer } from "./UiTestLib.mjs";
-import { readFileSync as ReadFile } from "node:fs";
+import { LaunchOptions, StartUiServer, BackendPython } from "./UiTestLib.mjs";
 import { execFileSync as Execute } from "node:child_process";
 import { fileURLToPath as FilePath } from "node:url";
 import Path from "node:path";
 import Assert from "node:assert/strict";
 const Root = Path.dirname(FilePath(import.meta.url)), Backend = Path.resolve(Root, '../back end');
-const Python = ReadFile(Path.join(Root, '../.backend-python.txt'), 'utf8').replace(/^﻿/, '').trim();
+const Python = BackendPython();
 const State = JSON.parse(Execute(Python, ['-c', 'import json, bridge_server; print(json.dumps(bridge_server.BridgeController().state_snapshot()))'], { cwd: Backend, encoding: 'utf8' }));
 State.arm_connected = true; State.torque = true; State.port = 'FAKE';
 const SnapLimitMs = 500, SlackMs = 150;  // slack: React commit plus the observer's frame, on this PC idle

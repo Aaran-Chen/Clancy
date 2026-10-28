@@ -29,7 +29,7 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 import serial.tools.list_ports
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -229,6 +229,22 @@ HOLD_REARM_MAX_ERROR_RAW = 512
 # v2-confirmed (2026-10-12): a protection reading acts only once it persists. One missed temperature reply, or one status
 # reply reading torque off, a fault bit or telemetry no servo can report, coasted a healthy arm (16:17:25, 16:32:43);
 # each is now read again first, and the tolerated ones go to bridge_events.jsonl as protection_glitch (MotorProtection.md).
+# 2026-10-22: a corrupted status reply (ServoTelemetryImpossible) never latches on its own, even repeated: a protection_glitch,
+# and the joint's position decides (StatusCorruptHoldS). The string stays as the page checks it (App.tsx).
+# protection-confirmed-v3 (BridgeVersion, 2026-10-22 review round 1): no single reply anywhere stops the arm. A corrupted
+# status streak (CorruptStatusPersists) confirms over time and over independent reads: torque re-read on its own and
+# re-asserted, a lost hold judged against where the streak began, a grasp or a route bounded by StatusCorruptHoldS, every
+# streak by StatusCorruptMaxS; over-limit temperatures persist ProtectionHotConfirmS; ReadEveryJoint re-reads status.
+# Review round 3: torque read off on a joint's own re-reads stays a restart check until its Lock reads 1 (a goal write
+# energised a restarted servo and hid it); the cap counts a chain of streaks; only corrupt-looking temperatures are left out
+# of the hot count; a fault reading with an unanswered one confirms nothing; ReadEveryJoint re-reads an unanswered torque or
+# status read; a re-assert's goal is a confirmed position re-read.
+# Review round 4: while a restart check is pending nothing moves unsupervised (a route holds, a correction is stopped).
+# Review round 5: that hold, run in the burst's own frame, tolerates one garbled read-back or one failed write on a joint
+# whose replies read corrupted (re-read twice / written again, a protection_glitch); both re-reads disagreeing still coast.
+# Review round 6 (protection-confirmed-v3.1): a velocity mode read is never outvoted by one re-read garbled to position; a
+# routed joint read off its route is read again twice before it latches (RouteExitConfirmed); a suspect grasping gripper's
+# squeeze is tolerant too.
 ProtectionVersion = "auto-coast-v2-confirmed"
 # Conservative software limits, additional to the servo's firmware protection.
 ProtectionTemperatureC = 60
@@ -241,11 +257,70 @@ ProtectionStallSeconds = 3.0
 # 2 at the 0.25 s poll is at most about 0.5 s without a temperature, which takes minutes to change. A joint whose
 # position fails too trips at once, as before.
 ProtectionFeedbackMisses = 2
-# A status reply whose telemetry no servo can report is a corrupted reply, read as a failed one (ServoTelemetryImpossible):
-# Present_Load beyond its 0-1000 magnitude, a supply under 6.0 V with 85 C or more, or over 14.0 V (the STS3215's rating).
+# An over-limit temperature trips only once every poll has read it over the limit (each confirmed by its re-read) for this
+# long: one corrupted reply, or one plus a missed re-read, coasted a healthy arm (an 83 C byte on a 28 C servo; 90 C in the
+# 2026-10-22 corruption). Real heating takes minutes against the 22 C margin to 60 C, which itself sits under the servos'
+# own overheat unload, so 1 s (4 polls) gives nothing up. A poll gap over ProtectionHotGapS starts the count again.
+ProtectionHotConfirmS = 1.0
+ProtectionHotGapS = 0.75
+# An over-limit poll that looks like the corruption itself is left out of that count (neither counted nor restarting it,
+# review round 3 finding 2): a read and re-read more than ProtectionTemperatureAgreeC apart, or, while the joint's status is
+# in a corrupted streak, ServoHotC or more (the 2026-10-22 replies read 89-90 C; a real reading that hot is the servo's
+# own overheat protection's to act on). A steady plausible over-limit reading counts whatever the status reads: a whole
+# streak discounting it hid a real 65 C for as long as the status kept reading corrupted between clean frames.
+ProtectionTemperatureAgreeC = 3
+# A status reply whose telemetry no servo can report, or whose telemetry did not read in full, is a corrupted reply
+# (CorruptStatusReply, ServoTelemetryImpossible): Present_Load beyond its 0-1000 magnitude, or a supply under 6.0 V with
+# 85 C or more. A supply over the STS3215's 14.0 V rating is a value a servo can report (one byte of dV, up to 25.5 V): a
+# real over-voltage, latched like any fault bit once the re-read confirms it (until review round 1 it read as corrupted
+# and, with the joints holding, never latched).
 ServoLoadMaximum = 1000
 ServoVoltageRangeDv = (60, 140)
 ServoHotC = 85
+# Corrupted status replies come in streaks per joint (CorruptStatusPersists): frames whose readings include a corrupted
+# one, a gap over StatusStreakGapS (about 7 frames) starting a new streak; a clean reading, Hold, Coast, Stop, a fault,
+# the emergency stop, a disconnect or the end of hand guiding ends it. 2026-10-22 two corrupted replies in a row (load
+# 64001, 0 V, 90 C) ended a task with every joint exactly on its target. Within a streak:
+# - a route is held where it is (HoldRoute), and a gripper holding an object (GraspHold, whose position cannot show a
+#   lost grip) latches, once the streak has lasted StatusCorruptHoldS;
+# - a holding joint latches once it has moved StatusCorruptHoldDriftRaw further from its hold point than it was when the
+#   streak began, on two frames in a row: above the 12-step deadband where an ordinary hold correction starts;
+# - torque read off (bit 7: Torque_Enable is its own register, read before the telemetry) is read again on its own,
+#   re-asserted once with a goal write at the joint's present position where that is safe, and latches once it has
+#   stayed off on those re-reads for StatusTorqueOffConfirmS;
+# - every streak latches once it has lasted StatusCorruptMaxS, whatever the position: 5 s is 150 frames of corrupted
+#   replies, against the longest on record of 2, and bounds how long a fault the corruption hides (an over-voltage or a
+#   fault bit the bridge cannot read) goes unlatched to seconds; the servos' own unload protections act regardless, and
+#   heating takes minutes. The cap counts a chain of streaks, not only an unbroken one (review round 3 finding 2): a clean
+#   frame ends a streak, but the chain goes on until the joint has read clean for StatusCorruptChainGapS, and it latches
+#   past StatusCorruptMaxS once corrupted frames are at least half of its frames in the last StatusCorruptMaxS.
+#   Corruption on most frames with a clean one between never reached the cap; a rare corrupted frame (the 2026-10-22
+#   burst was 2) leaves most frames clean, and a fault shows on those.
+# A pair of one fault reading and one failed (unanswered) reading confirms nothing either (review round 3 finding 3): it
+# goes to the streak, as a corrupted one does, so a fault bit is confirmed by a plausible reading in a later frame.
+StatusStreakGapS = 0.25
+StatusCorruptHoldS = 2.0
+StatusCorruptHoldDriftRaw = 30  # as SerialLinkHoldDriftRaw: a holding joint unwatched must stay within it
+StatusTorqueOffConfirmS = 0.3
+StatusCorruptMaxS = 5.0
+StatusCorruptChainGapS = 1.0
+# Torque re-assert: the goal is the joint's position re-read on its own twice, each within StatusReassertAgreeRaw of the
+# other and of the frame's reading, and within StatusCorruptHoldDriftRaw of where the streak began, its hold point or its
+# target (review round 3 finding 5: one corrupted Present_Position read, 28 on a pan at 3479, was written as the goal).
+StatusReassertAgreeRaw = 8
+# Restart check (review round 3 finding 1): torque read off on a joint's own re-reads during a streak is remembered
+# (StatusRestartChecks) until its Lock, read on its own twice once torque reads on again, reads 1. A restarted servo keeps
+# Lock 0 (only the bridge writes it, at Hold and connect), so a goal write that energised it (a hold correction, a route,
+# Stop) no longer hides the restart: Lock 0 twice latches. A check whose Lock reads neither way for StatusRestartConfirmS
+# latches too. Meanwhile nothing moves unsupervised (review round 4): a route or other timed motion is held where it is
+# (HoldRoute, the streaks kept), and a hold correction streaming into that joint is stopped with one Goal_Speed write
+# (StopForRestartCheck: 0 when Operating_Mode reads velocity twice, else 1), its stream kept to resume once the check ends.
+# Skipping its writes alone left a velocity-mode joint running at its last Goal_Speed for up to the check's length.
+StatusRestartConfirmS = 1.0
+# MotionPreflight reads a joint whose status reads corrupted again, up to StatusPreflightReads fresh pairs
+# StatusPreflightIntervalS apart (about 0.2 s under the motor lock, the arm holding still), before refusing the move.
+StatusPreflightReads = 5
+StatusPreflightIntervalS = 0.04
 # A control frame that starts this long after the last one ended trips protection while anything moves:
 # a joint in velocity mode keeps its last speed meanwhile, unsupervised (the servos have no host timeout).
 # An arm holding still (every joint in its servo's own position hold) is read again instead, and goes on
@@ -266,6 +341,9 @@ ControlLockHoldNoteS = 0.05
 # With no frame finished for this long, the running server dumps every thread's stack (faulthandler, which
 # works even while another thread holds the interpreter lock) to captures/<date>/recording/control_stalls.log.
 ControlStallDumpS = 0.5
+# A motion asked for while the depth camera opens (1-7 s with the interpreter lock held: the control loop freezes)
+# waits this long, off the motor lock, for the open to finish; then it is refused (BridgeController.WaitForCameraOpen).
+CameraOpenWaitS = 10.0
 # hold-v3: Hold holds every joint where it is, also outside its slider limits; a limit edit never moves a joint;
 # a route stopped by a changed scene or configuration holds instead of coasting (2026-10-07 audit H1-H3, M8).
 # hold-v4: a joint held in the middle of its excluded window reads its jitter there as jitter (not a turn); a stop that
@@ -277,7 +355,9 @@ SafetyVersion = "hold-v4"
 SceneVersion = "scene-hold-v1"
 # The camera checked against the gripper tip with no calibrated desk in view (RobotReference.py); an "assumed"
 # camera keeps the [UNRELIABLE] tag and the scene tripwire (Aaran's decision, 2026-10-07 audit IH1).
-RobotReferenceVersion = "tip-check-assumed-unverified-v1"
+# robot-witnesses-v2 (2026-10-25): the basket rim decides beside the tape (either off past its limits blocks), a desk in view
+# that disagrees is decided by both (nothing assumed there), and a fully verified desk pass records the rim.
+RobotReferenceVersion = "robot-witnesses-v2"
 # Who may use the bridge (RemoteAccess.py): this PC as before, other devices with the remote password, other sites'
 # pages never; a connect from another device, or after a deliberate disconnect, only on a Connect click (2026-10-07
 # audit 2 H2, M2; Aaran's decision 2).
@@ -460,6 +540,66 @@ def _load_json(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+class JsonFileCache:
+    """A JSON file read off the motor lock (Refresh) and handed to its holders with no disk access (Data).
+
+    The control stalls of 2026-10-13..25 ("the motor lock, held by asyncio_N", up to 1719 ms) were WebSocket clients'
+    state snapshots reading WorkspaceFrame.json under the lock, 30 times a second each, while the recorder wrote video
+    to the same disk: one stat or read that waited stalled the 30 Hz loop with it. A running route read it every frame
+    too (CheckMotionRoute's ConfigurationKey). Refresh reads the file again only when its mtime or size changed; a read
+    that does not parse is kept but tried again at the next Refresh.
+    """
+
+    def __init__(Self, File: Path) -> None:
+        Self.File = File
+        Self.Entry: tuple[Any, dict[str, Any]] | None = None  # ((st_mtime_ns, st_size) or None, data): swapped whole
+
+    def Refresh(Self) -> dict[str, Any]:
+        """Off the motor lock: the file's data, read again if it changed. Shared: never change it in place."""
+        try:
+            Stat = Self.File.stat()
+            Stamp = (Stat.st_mtime_ns, Stat.st_size)
+        except OSError:
+            Stamp = None
+        Entry = Self.Entry
+        if Entry is None or Entry[0] != Stamp:
+            Data = _load_json(Self.File)
+            Entry = Self.Entry = (Stamp if Data else None, Data)  # an unparsed read: read again next time
+        return Entry[1]
+
+    def Data(Self) -> dict[str, Any]:
+        """The data as last refreshed, without touching the disk (only the first use reads it). Shared: never change it."""
+        Entry = Self.Entry
+        return Entry[1] if Entry is not None else Self.Refresh()
+
+
+WorkspaceFrameFile = JsonFileCache(BACKEND_ROOT / "WorkspaceFrame.json")
+# How often the running server looks for an edited WorkspaceFrame.json (WatchFiles), page connected or not.
+FileWatchS = 0.25
+
+
+def WorkspaceFrame() -> dict[str, Any]:
+    """WorkspaceFrame.json as last read (WorkspaceFrameFile), a copy the caller may change: no disk access, so it is
+    safe under the motor lock. The running server refreshes it every FileWatchS, and each state snapshot first."""
+    return copy.deepcopy(WorkspaceFrameFile.Data())
+
+
+def ConfigurationText(Inputs: list[Any]) -> str:
+    """BridgeController.ConfigurationKey's text of its ConfigurationInputs."""
+    return json.dumps(Inputs, sort_keys=True)
+
+
+def WatchFiles() -> None:
+    """The running server's thread re-reading WorkspaceFrame.json when it changes, so an edit mid-route still stops the
+    route holding (CheckMotionRoute) with no page connected."""
+    while True:
+        try:
+            WorkspaceFrameFile.Refresh()
+        except Exception as Exc:
+            print(f"[file-watch] could not read {WorkspaceFrameFile.File.name}: {Exc}", file=sys.stderr)
+        time.sleep(FileWatchS)
+
+
 def _normalize_deg(angle: float) -> float:
     return (float(angle) + 180.0) % 360.0 - 180.0
 
@@ -538,6 +678,7 @@ class InstrumentedLock:
         Self._Lock = threading.RLock()
         Self._Depth = 0
         Self.Owner: str | None = None
+        Self.OwnerIdent: int | None = None
         Self.Since = 0.0
         Self.Holds: collections.deque = collections.deque(maxlen=50)
 
@@ -546,7 +687,7 @@ class InstrumentedLock:
             return False
         Self._Depth += 1
         if Self._Depth == 1:
-            Self.Owner, Self.Since = threading.current_thread().name, time.monotonic()
+            Self.Owner, Self.OwnerIdent, Self.Since = threading.current_thread().name, threading.get_ident(), time.monotonic()
         return True
 
     def release(Self) -> None:
@@ -555,13 +696,17 @@ class InstrumentedLock:
             Now = time.monotonic()
             if Now - Self.Since > ControlLockHoldNoteS:
                 Self.Holds.append((Self.Owner, Self.Since, Now))
-            Self.Owner = None
+            Self.Owner = Self.OwnerIdent = None
         Self._Lock.release()
 
     __enter__ = acquire
 
     def __exit__(Self, *Exc) -> None:
         Self.release()
+
+    def HeldHere(Self) -> bool:
+        """Whether this thread holds the lock (then it must not start slow work, such as reading a file)."""
+        return Self.OwnerIdent == threading.get_ident()
 
     def HoldsSince(Self, Start: float) -> list[dict[str, Any]]:
         """The long holds (and the current one) overlapping [Start, now], newest last, in plain fields."""
@@ -606,7 +751,8 @@ class RouteHeld(Exception):
 
 
 class CorruptStatusReply(ValueError):
-    """A servo status reading whose telemetry no servo can report (ServoTelemetryImpossible): read as a failed read."""
+    """A servo status reading whose telemetry no servo can report (ServoTelemetryImpossible), or did not read in full: a
+    corrupted reply, never a fault by itself (CorruptStatusPersists)."""
 
     def __init__(self, Text: str, Bits: int, Telemetry: dict[str, Any]) -> None:
         super().__init__(Text)
@@ -655,6 +801,17 @@ class BridgeController:
         self.ProtectionGlitches: collections.deque[dict[str, Any]] = collections.deque(maxlen=20)
         # Per joint: Present_Temperature polls failed in a row (ProtectionFeedbackMisses).
         self.TemperatureMisses: dict[str, int] = {}
+        # Per joint: its streak of corrupted status replies (CorruptStatusPersists): Since, LastSeen (time.monotonic()),
+        # StartRaw and the hold point it is judged against, the torque re-check's state (StatusStreakGapS).
+        self.StatusCorruptStreaks: dict[str, dict[str, Any]] = {}
+        # Per joint: its chain of streaks for the StatusCorruptMaxS cap (Since, LastSeen, Corrupt and Clean frames).
+        self.StatusCorruptChains: dict[str, dict[str, Any]] = {}
+        # Per joint: since when its torque read off on its own re-reads in a streak, until its Lock reads 1 (StatusRestartConfirmS).
+        self.StatusRestartChecks: dict[str, float] = {}
+        # (since, last counted) of each joint's over-limit polls (CheckMotorProtection); the joints whose last over-limit
+        # poll was left out as corrupted (one protection_glitch each time that starts).
+        self.TemperatureHotSince: dict[str, tuple[float, float]] = {}
+        self.TemperatureDiscounted: set[str] = set()
         # Per joint: (error at the last progress, when, the target it was measured against).
         self.ProtectionProgress: dict[str, tuple[float, float, int]] = {}
         self.LastProtectionPoll = 0.0
@@ -672,6 +829,12 @@ class BridgeController:
         self.DisconnectIntent: dict[str, Any] | None = None
         self.IntentSink: Callable[[dict[str, Any] | None], None] | None = None
         self.IntentLock = threading.Lock()
+        # The depth camera whose opens no motion may overlap (OrbbecCamera.DepthCamera's open interlock; only the running
+        # server has one), and the motions being checked and planned now, during which no open starts (CameraMustWait).
+        self.Camera: Any = None
+        self.MotionsStarting: set[object] = set()
+        # What the bridge is still starting, or None (StartupPending; only the running server sets it): no motion before.
+        self.WarmUp: Callable[[], str | None] | None = None
         self.LastBridgeEvent: dict[str, Any] | None = None
         self.MotionEpoch = 0
         self.CalibrationPlans: dict[str, dict[str, Any]] = {}
@@ -696,7 +859,7 @@ class BridgeController:
         self.HandGuideOwners: dict[str, float] = {}
         self.HandGuideThreaded = True
         self.HandGuideCalibrationPath = BACKEND_ROOT / HandGuideCalibrationFile
-        self.HandGuideCalibrationCache: tuple[float, dict | None] | None = None
+        self.HandGuideCalibrationCache: tuple[tuple[int, int] | None, dict | None] | None = None
         self.HandGuideCalibrationResult: dict[str, Any] | None = None
         self.HandGuideRestoreSpeedAt = 0.0
         # A session wrote Acceleration 0 and its coast left it so: the next Hold writes the normal profile first.
@@ -1101,6 +1264,22 @@ class BridgeController:
         self.RecordBridgeEvent("protection_glitch", f"{Joint} {Register}: {Note}", Joint,
                                {"register": Register, "value": Value, **(Details or {})}, Diagnostic=True)
 
+    def EndStatusStreaks(self, KeepRestartChecks: bool = False) -> None:
+        """Every joint's corrupted-status streak ends (CorruptStatusPersists): Hold, Coast, Stop, a latched fault or a
+        cleared one, the emergency stop, a disconnect, the end of hand guiding. A streak start left from before skipped
+        the next streak's StatusCorruptHoldS window and its protection_glitch (review round 1, findings 5 and 11). Their
+        chains end too. A pending restart check (StatusRestartChecks) is kept on a Stop that holds (KeepRestartChecks):
+        its goal writes energise a restarted servo, the very thing the check exists to see through (round 3 finding 1)."""
+        self.StatusCorruptStreaks.clear()
+        self.StatusCorruptChains.clear()
+        if not KeepRestartChecks:
+            self.StatusRestartChecks.clear()
+
+    def ActiveStatusStreaks(self) -> list[str]:
+        """The joints whose status read corrupted within the last StatusStreakGapS (an active streak)."""
+        Now = time.monotonic()
+        return [Name for Name, Streak in self.StatusCorruptStreaks.items() if Now - Streak["LastSeen"] <= StatusStreakGapS]
+
     def StopMotion(self, Reason: str = "Motion stopped", Latch: bool = False, KeepGrasp: bool = True) -> tuple[bool, str]:
         """Stop any motion and hold every joint where it is (torque on), or with Latch coast every joint (AutoCoast).
 
@@ -1110,6 +1289,11 @@ class BridgeController:
         out while the arm held: on Stop and hold, and since the audit H1 fix also when a route's measured scene changed
         or expired mid-carry (HoldRoute) (2026-10-08 safety review)."""
         with self.lock:
+            # Joints whose replies are reading corrupted (an active streak or a pending restart check), taken before the
+            # streaks end: their stop tolerates one garbled read-back or one failed write (_stop_slider_velocity_locked's
+            # Tolerant, review round 5), so the burst that held the route cannot coast it through the hold's own reads.
+            Suspect = set(self.ActiveStatusStreaks()) | set(self.StatusRestartChecks)
+            self.EndStatusStreaks(KeepRestartChecks=not Latch)
             if Latch:
                 return self.AutoCoast(Reason, Kind="motion_fault")
             if self.HandGuide is not None and not self.SerialLinkLost():
@@ -1141,21 +1325,28 @@ class BridgeController:
             for Servo in self.servos.values():
                 Gripping, Squeezed = KeepGrasp and Servo.GraspHold, False
                 if self.bus is not None:
+                    Tolerant = Servo.name in Suspect
                     try:
-                        Mode = self.bus.read("Operating_Mode", Servo.name, normalize=False, num_retry=1)
-                        # Zero stops velocity mode but means maximum speed in
-                        # position mode. Limit position speed while parking.
-                        self.bus.write("Goal_Speed", Servo.name, 0 if Mode == OperatingMode.VELOCITY.value else 1,
-                                       normalize=False, num_retry=1)
+                        if Tolerant:
+                            # Velocity only when it reads velocity on its own twice: 0 to a position-mode servo is full
+                            # speed, and a garbled or unanswered read must neither choose that nor coast the arm.
+                            Velocity = self.ReadsVelocityTwice(Servo)[0]
+                            self.WriteTolerated(Servo, "Goal_Speed", 0 if Velocity else 1, 1)
+                        else:
+                            Mode = self.bus.read("Operating_Mode", Servo.name, normalize=False, num_retry=1)
+                            # Zero stops velocity mode but means maximum speed in
+                            # position mode. Limit position speed while parking.
+                            self.bus.write("Goal_Speed", Servo.name, 0 if Mode == OperatingMode.VELOCITY.value else 1,
+                                           normalize=False, num_retry=1)
                         # A new position command clears firmware protection. Never
                         # write one to a faulted joint or use stale feedback to hold.
                         if (Servo.FeedbackOk and not self.faults.get(Servo.name)
                                 and not getattr(self.bus, "PacketFaults", {}).get(Servo.name)):
                             if Gripping:
-                                self.SqueezeGrasp(Servo, Servo.present_raw)
+                                self.SqueezeGrasp(Servo, Servo.present_raw, tolerant=Tolerant)
                                 Squeezed = True
                             else:
-                                self._stop_slider_velocity_locked(Servo, hold_target=False, num_retry=1)
+                                self._stop_slider_velocity_locked(Servo, hold_target=False, num_retry=1, tolerant=Tolerant)
                     except Exception as Exc:
                         Errors.append(f"{Servo.name}: {Exc}")
                 Servo.command_raw = None
@@ -1179,6 +1370,7 @@ class BridgeController:
         """
         with self.lock:
             self.EndHandGuide("teardown", Reason)
+            self.EndStatusStreaks()
             self.RecordBridgeEvent(Kind, Reason)
             if self.MotionRoute is not None:
                 # A route that faults keeps its frames too: 2026-10-04 23:50:01's left none, and the
@@ -1221,6 +1413,19 @@ class BridgeController:
         with self.lock:
             self.RecordBridgeEvent("motion_abort", f"Route stopped, holding: {Why}", Details=Details)
             return self.StopMotion(f"Motion stopped and holding where it is: {Why}")
+
+    def HoldRouteKeepingStreaks(self, Why: str, Details: dict[str, Any] | None = None) -> tuple[bool, str]:
+        """HoldRoute for a corrupted-status cause: the streaks go on (StopMotion ends them), each judged from its new hold
+        point, Since kept for the cap, and so do their chains; StopMotion itself keeps a pending restart check."""
+        with self.lock:
+            Kept = {Each: dict(Value, HoldRaw=None, HoldTarget=None, AwayFrames=0)
+                    for Each, Value in self.StatusCorruptStreaks.items()}
+            Chains = {Each: dict(Value) for Each, Value in self.StatusCorruptChains.items()}
+            Result = self.HoldRoute(Why, Details=Details)
+            if self.torque_enabled and not self.MotionFault:
+                self.StatusCorruptStreaks.update(Kept)
+                self.StatusCorruptChains.update(Chains)
+            return Result
 
     def ProtectionStatus(self) -> str:
         Trip = self.ProtectionTrip
@@ -1295,6 +1500,42 @@ class BridgeController:
     def MotionInProgress(self) -> bool:
         return (self.MotionRoute is not None or self.CalibrationActive or self.HandGuide is not None
                 or any(S.command_raw is not None or S.homing for S in self.servos.values()))
+
+    def CameraMustWait(self) -> bool:
+        """The depth camera's Quiet: no open while the arm moves (MotionInProgress) or a motion is being checked and
+        planned (MotionsStarting). Takes no lock: the camera calls it holding its OpenLock, which the bridge takes
+        inside the motor lock (MotionStartGate)."""
+        return bool(self.MotionsStarting) or self.MotionInProgress()
+
+    @contextmanager
+    def MotionStartGate(self):
+        """Held with the motor lock from a motion's last check (MotionPreflight refuses while the camera opens) until it
+        counts as moving (CameraMustWait), so no depth-camera open can start in between (DepthCamera.OpenLock)."""
+        if self.Camera is None:
+            yield
+            return
+        with self.Camera.OpenLock:
+            yield
+
+    def MotionStartRefusal(self) -> str | None:
+        """Why no motion may start now: the bridge's startup warm-up, or a depth-camera open under way. Both freeze the
+        control loop for seconds (the route check workers' spawn and the first camera open: 6.1-6.8 s about 6 s after
+        each bridge start on 2026-10-25), which must never land inside a route."""
+        Pending = self.WarmUp() if self.WarmUp is not None else None
+        if Pending:
+            return (f"Cannot move yet: the bridge is still starting ({Pending}), which can freeze the motor control loop "
+                    "for seconds. Try again in a few seconds")
+        if self.Camera is not None and self.Camera.Opening:
+            return ("Cannot move while the depth camera opens: opening it can freeze the motor control loop for seconds. "
+                    "Try again in a moment")
+        return None
+
+    def WaitForCameraOpen(self) -> None:
+        """Off the motor lock, with the motion in MotionsStarting (no new open starts): let a depth-camera open under way
+        finish, up to CameraOpenWaitS, so the motion starts after it instead of being refused."""
+        Deadline = time.monotonic() + CameraOpenWaitS
+        while self.Camera is not None and self.Camera.Opening and time.monotonic() < Deadline:
+            time.sleep(0.05)
 
     def MovingRefusal(self, What: str) -> str | None:
         """Why What may not happen now: the arm is moving (a route, a stream, a hold correction). Changing Home,
@@ -1476,10 +1717,15 @@ class BridgeController:
         for Name in MOTOR_NAMES:
             Servo = self.servos[Name]
             try:
-                Raw = int(self.bus.read("Present_Position", Name, normalize=False, num_retry=1))
-                Torque = bool(self.bus.read("Torque_Enable", Name, normalize=False, num_retry=1))
-                Bits = int(self.bus.read("Hardware_Error_Status", Name, normalize=False, num_retry=1))
-                Mode = int(self.bus.read("Operating_Mode", Name, normalize=False, num_retry=1))
+                # While holding, one unanswered read is not a joint that did not answer (review round 3 finding 4): a
+                # position is read once more (a second failure is a problem), torque and status go to fresh status
+                # readings (ConfirmedStatusProblems), the mode to two fresh reads (ConfirmedModeProblems).
+                Raw = self.ReadJointRegister("Present_Position", Name, Holding)
+                if isinstance(Raw, Exception):
+                    Raw = int(self.bus.read("Present_Position", Name, normalize=False, num_retry=1))
+                Torque = self.ReadJointRegister("Torque_Enable", Name, Holding)
+                Bits = self.ReadJointRegister("Hardware_Error_Status", Name, Holding)
+                Mode = self.ReadJointRegister("Operating_Mode", Name, Holding)
             except Exception as Exc:
                 if self.SerialLinkLost():
                     break
@@ -1489,18 +1735,97 @@ class BridgeController:
                     break
                 continue
             Servo.present_raw, Servo.HardwareRaw, Servo.FeedbackOk = Raw % RESOLUTION, Raw, True
+            Failed = isinstance(Torque, Exception) or isinstance(Bits, Exception)
             if Torque and not Holding:
                 Energised.append(Name)
-            if Torque != Holding:
-                Problems.append(f"{Name} torque is {'on' if Torque else 'off'}")
-            if Bits:
-                Problems.append(f"{Name} reports hardware status {Bits}")
+            if Holding and (Failed or not Torque or Bits):
+                # One reading is not a fault here either (review round 1 finding 10): read again as the frame does.
+                Problems.extend(self.ConfirmedStatusProblems(Name, Torque, Bits, While))
+                if self.SerialLinkLost():
+                    break
+            else:
+                if Torque != Holding:
+                    Problems.append(f"{Name} torque is {'on' if Torque else 'off'}")
+                if Bits:
+                    Problems.append(f"{Name} reports hardware status {Bits}")
             if Holding and Mode != OperatingMode.POSITION.value:
-                Problems.append(f"{Name} is not in position mode")
+                Problems.extend(self.ConfirmedModeProblems(Name, Mode, While))
+                if self.SerialLinkLost():
+                    break
             Moved = self._circular_raw_distance(Servo.present_raw, Before.get(Name, Servo.present_raw))
             if Holding and Moved > SerialLinkHoldDriftRaw:
                 Problems.append(f"{Name} moved {Moved} steps {While}")
         return Problems, Energised, Silent
+
+    def ConfirmedStatusProblems(self, Name: str, Torque: int | Exception, Bits: int | Exception, While: str) -> list[str]:
+        """ReadEveryJoint's check of a holding joint whose one read showed torque off or a status bit, or did not answer
+        (round 3 finding 4): two fresh status readings (ReadServoStatus), and a problem only when both show one with
+        telemetry a servo can report, or when neither answered. One corrupted, contradicted or unanswered read coasted a
+        holding arm after a control delay or a serial link drop (review round 1 finding 10). Anything else is a
+        protection_glitch: the frame's own status check, which runs before any write, reads the joint again with its
+        streak rules (CorruptStatusPersists)."""
+        Readings: list[tuple[int, dict[str, Any]] | Exception] = []
+        for _ in range(2):
+            try:
+                Readings.append(self.ReadServoStatus(Name))
+            except Exception as Exc:
+                if self.SerialLinkLost():
+                    return []
+                Readings.append(Exc)
+        if all(not isinstance(Each, Exception) and Each[0] for Each in Readings):
+            Confirmed = Readings[-1][0]
+            return (([f"{Name} torque is off"] if Confirmed & (1 << 7) else [])
+                    + ([f"{Name} reports hardware status {Confirmed & 0x7F}"] if Confirmed & 0x7F else []))
+        if all(isinstance(Each, Exception) and not isinstance(Each, CorruptStatusReply) for Each in Readings):
+            return [f"{Name} status did not answer ({Readings[-1]})"]
+        Shown = next((Each for Each in Readings if isinstance(Each, Exception) or Each[0]), None)
+        if isinstance(Torque, Exception) or isinstance(Bits, Exception):
+            Register = "Torque_Enable" if isinstance(Torque, Exception) else "Hardware_Error_Status"
+            Value, Note = None, f"{Register} did not answer"
+        elif not Torque:
+            Register, Value, Note = "Torque_Enable", 0, "torque read off"
+        else:
+            Register, Value, Note = "Hardware_Error_Status", Bits, f"status bits {Bits}"
+        Details = {"first_read": {"torque": str(Torque) if isinstance(Torque, Exception) else int(Torque),
+                                  "bits": str(Bits) if isinstance(Bits, Exception) else Bits}}
+        if Shown is not None:
+            Details.update(self.StatusGlitchDetails(Shown)[3])
+        self.NoteProtectionGlitch(Name, Register, Value, f"{Note} {While}; read again, not confirmed", Details)
+        return []
+
+    def ReadJointRegister(self, Register: str, Name: str, Holding: bool) -> int | Exception:
+        """One of ReadEveryJoint's reads: while holding, a failed read is returned (the caller reads it again) rather than
+        raised; coasting, a failed read is a joint that did not answer, as is any failure once the link is lost."""
+        try:
+            return int(self.bus.read(Register, Name, normalize=False, num_retry=1))
+        except Exception as Exc:
+            if not Holding or self.SerialLinkLost():
+                raise
+            return Exc
+
+    def ConfirmedModeProblems(self, Name: str, Mode: int | Exception, While: str) -> list[str]:
+        """ReadEveryJoint's check of a holding joint whose one Operating_Mode read was not position mode, or did not answer:
+        two fresh reads, and a problem only when both read a mode other than position, or neither answered. One corrupted
+        byte there (the 10-22 corruption read Lock 28) coasted a healthy holding arm after a control delay or a serial link
+        drop (review round 2 finding 3). Anything else is a protection_glitch."""
+        Reads: list[int | Exception] = []
+        for _ in range(2):
+            try:
+                Reads.append(int(self.bus.read("Operating_Mode", Name, normalize=False, num_retry=1)))
+            except Exception as Exc:
+                if self.SerialLinkLost():
+                    return []
+                Reads.append(Exc)
+        if all(not isinstance(Each, Exception) and Each != OperatingMode.POSITION.value for Each in Reads):
+            return [f"{Name} is not in position mode"]
+        if isinstance(Mode, Exception) and all(isinstance(Each, Exception) for Each in Reads):
+            return [f"{Name} Operating_Mode did not answer ({Reads[-1]})"]
+        self.NoteProtectionGlitch(Name, "Operating_Mode", None if isinstance(Mode, Exception) else Mode,
+                                  f"{'did not answer' if isinstance(Mode, Exception) else f'read {Mode}'} {While}; "
+                                  "read again, not confirmed",
+                                  {"first_read": str(Mode) if isinstance(Mode, Exception) else Mode,
+                                   "reads": [str(Each) if isinstance(Each, Exception) else Each for Each in Reads]})
+        return []
 
     def EndSerialOutage(self, Note: str, Details: dict[str, Any] | None = None) -> None:
         """Close the current drop: count it, record it and show Note as the status."""
@@ -1543,25 +1868,71 @@ class BridgeController:
                                               {"error": str(Exc), "misses": Misses, "limit": ProtectionFeedbackMisses})
                     continue
                 self.TemperatureMisses[Name] = 0
+                Again = Temperature  # the over-limit re-read, once taken
                 Limit = ProtectionRearmTemperatureC if BeforeArm else ProtectionTemperatureC
                 if Temperature >= Limit:
                     # Confirm before acting: a lone corrupted byte read 83 C on a 28 C servo and
                     # dropped the arm mid-route. Real heating takes minutes, a re-read milliseconds.
                     try:
                         Confirm = int(self.bus.read("Present_Temperature", Name, normalize=False, num_retry=1))
-                    except Exception:
-                        Confirm = Temperature
+                        if not 0 <= Confirm <= 150:
+                            raise ValueError("invalid temperature feedback")
+                    except Exception as Exc:
+                        # A missed re-read confirms nothing (review round 1 finding 7): it was taken as confirmation,
+                        # so one corrupted reply plus one missed reply coasted the arm.
+                        self.RaiseIfSerialLinkLost(Exc)
+                        if BeforeArm:
+                            raise RuntimeError(f"Cannot verify {Name} temperature: read {Temperature} C, re-read failed: {Exc}")
+                        self.NoteProtectionGlitch(Name, "Present_Temperature", Temperature,
+                                                  f"read {Temperature} C, re-read failed; read again at the next poll",
+                                                  {"read_c": Temperature, "error": str(Exc)})
+                        continue
                     if 0 <= Confirm < Limit:
                         self.NoteProtectionGlitch(Name, "Present_Temperature", Temperature, f"read {Temperature} C, re-read {Confirm} C",
                                                   {"read_c": Temperature, "confirmed_c": Confirm})
                         Temperature = Confirm
+                    else:
+                        Again = Confirm
                 self.ProtectionTelemetry[Name] = {"temperature_c": Temperature, "at_s": time.time()}
-                if Temperature >= Limit:
-                    if BeforeArm:
-                        raise RuntimeError(f"{Name} is {Temperature} C; cool below {Limit} C before Hold")
+                Corrupt = Name in self.ActiveStatusStreaks()
+                if Temperature < Limit:
+                    self.TemperatureHotSince.pop(Name, None)
+                    self.TemperatureDiscounted.discard(Name)
+                    continue
+                if BeforeArm:
+                    raise RuntimeError(f"{Name} is {Temperature} C; cool below {Limit} C before Hold")
+                # Over the limit on the read and its re-read: it trips once every counted poll has said so for
+                # ProtectionHotConfirmS. A poll that looks like the corruption itself is left out, neither counted nor
+                # restarting the count (review round 3 finding 2): a re-read that disagrees, or, in a corrupted status
+                # streak of this joint, ServoHotC or more (the 2026-10-22 replies read 90 C: review round 1 finding 6,
+                # round 2 finding 2; a real reading that hot is the servo's own overheat protection's). A steady plausible
+                # over-limit reading counts, streak or not: discounting every poll in a streak hid a real 65 C while the
+                # status read corrupted on most frames. A gap over ProtectionHotGapS between counted polls starts again.
+                Looks = (f"its re-read read {Again} C" if abs(Again - Temperature) > ProtectionTemperatureAgreeC else
+                         f"{Temperature} C, as the corrupted replies read" if Corrupt and Temperature >= ServoHotC else None)
+                if Looks is not None:
+                    if Name not in self.TemperatureDiscounted:
+                        self.TemperatureDiscounted.add(Name)
+                        self.NoteProtectionGlitch(Name, "Present_Temperature", Temperature,
+                                                  f"read {Temperature} C, left out of the over-limit count: {Looks}",
+                                                  {"read_c": Temperature, "re_read_c": Again, "limit_c": Limit,
+                                                   "status_corrupt": Corrupt, "discounted": Looks})
+                    continue
+                self.TemperatureDiscounted.discard(Name)
+                Previous = self.TemperatureHotSince.get(Name)
+                New = Previous is None or Now - Previous[1] > ProtectionHotGapS
+                Since = Now if New else Previous[0]
+                self.TemperatureHotSince[Name] = (Since, Now)
+                if Now - Since >= ProtectionHotConfirmS:
+                    self.TemperatureHotSince.pop(Name, None)
                     self.TripProtection(f"{Name} temperature {Temperature} C reached software limit {Limit} C", Joint=Name,
-                                        Details={"temperature_c": Temperature, "limit_c": Limit})
+                                        Details={"temperature_c": Temperature, "limit_c": Limit, "hot_s": round(Now - Since, 2),
+                                                 "status_corrupt": Corrupt})
                     return
+                if New:
+                    self.NoteProtectionGlitch(Name, "Present_Temperature", Temperature,
+                                              f"read {Temperature} C twice; trips once it persists {ProtectionHotConfirmS:g} s",
+                                              {"read_c": Temperature, "limit_c": Limit, "status_corrupt": Corrupt})
         if BeforeArm or not self.torque_enabled or self.MotionFault:
             return
         for Name, Servo in self.servos.items():
@@ -1629,16 +2000,20 @@ class BridgeController:
         self.status = f"Gripper holding an object at raw {Present}"
         return True
 
-    def SqueezeGrasp(self, Servo: ServoRuntime, FromRaw: int) -> int:
+    def SqueezeGrasp(self, Servo: ServoRuntime, FromRaw: int, tolerant: bool = False) -> int:
         """Hold the gripper in position mode GRIPPER_GRASP_SQUEEZE_RAW steps more closed than FromRaw.
 
         The servo's own position loop then presses on the object with a force bounded by
         that offset. Its target stays on the jaws (_write_active_slider_commands_locked keeps
         it there), so no correction drives them further into the object. Returns the goal.
+
+        tolerant (StopMotion, for a gripper whose replies read corrupted) is _stop_slider_velocity_locked's: one garbled
+        read-back or failed write of the squeeze is confirmed before it coasts the arm (review round 6, findings 3-4: the
+        strict read-back coasted every joint mid-carry and dropped the object). Every other caller keeps it strict.
         """
         Closer = GRIPPER_GRASP_SQUEEZE_RAW if Servo.arc_inverted else -GRIPPER_GRASP_SQUEEZE_RAW
         Servo.target_raw = self._clamp_raw(Servo, FromRaw + Closer)
-        self._stop_slider_velocity_locked(Servo, hold_target=True, num_retry=1)
+        self._stop_slider_velocity_locked(Servo, hold_target=True, num_retry=1, tolerant=tolerant)
         Goal = Servo.target_raw
         Servo.target_raw = self._clamp_raw(Servo, Servo.present_raw)
         Servo.GraspHold = True
@@ -1683,6 +2058,7 @@ class BridgeController:
                 # Do this only after every read succeeds. No torque cycle, goal
                 # write, or automatic resumption of the interrupted motion.
                 self.MotionFault = None
+                self.EndStatusStreaks()
                 self.MotionDeadline = 0.0
                 self.CalibrationPlans.clear()
                 self.MotionEpoch += 1
@@ -1695,6 +2071,9 @@ class BridgeController:
                 return {"ok": False, "error": str(Exc), "state": self.state_snapshot()}
 
     def MotionPreflight(self) -> None:
+        Refusal = self.MotionStartRefusal()
+        if Refusal:
+            raise RuntimeError(Refusal)
         if self.HandGuide is not None:
             raise RuntimeError("Hand guiding is on: press Hold here first")
         if self.SerialLinkLost():
@@ -1710,11 +2089,41 @@ class BridgeController:
         self._check_servo_faults_locked()
         if self.MotionFault:
             raise RuntimeError(self.MotionFault)
+        # No route or Home starts on a joint whose status reads corrupted (review round 1 finding 1), but one corrupted pair
+        # confirms nothing here either: refused at once, it cost the task an AI check-in and a second one ended it (review
+        # round 2 finding 4). Those joints are read again, each a fresh position and status pair StatusPreflightIntervalS
+        # apart (within StatusStreakGapS, so one streak), up to StatusPreflightReads times: the first clean pair ends the
+        # streak and the move starts; a streak still active after them all refuses. Not while anything moves: that refuses
+        # anyway, and the arm must not wait on these reads mid-route.
+        Corrupt = self.ActiveStatusStreaks()
+        for _ in range(StatusPreflightReads):
+            if not Corrupt or self.MotionFault or self.MotionInProgress():
+                break
+            time.sleep(StatusPreflightIntervalS)
+            if not self._read_positions_locked():
+                if self.SerialLinkLost():
+                    raise RuntimeError("Cannot move: " + self.SerialLinkDownText())
+                raise RuntimeError(self.MotionFault or "Joint feedback unavailable")
+            self._check_servo_faults_locked(Corrupt)
+            Corrupt = self.ActiveStatusStreaks()
+        if self.MotionFault:
+            raise RuntimeError(self.MotionFault)
+        if Corrupt:
+            raise RuntimeError(f"Cannot move: {', '.join(Corrupt)} status replies read corrupted; the arm holds. "
+                               "Try again in a moment, once they read clean")
+        # A joint whose torque read off on its own re-reads is not moved until its Lock reads 1 (round 3 finding 1).
+        if self.StatusRestartChecks:
+            raise RuntimeError(f"Cannot move: {', '.join(self.StatusRestartChecks)} torque read off and has not yet "
+                               "read back with its Lock closed; the arm holds. Try again in a moment")
 
     def ConfigurationKey(self) -> str:
-        return json.dumps([self.home_preset, self.arm_geometry, _load_json(BACKEND_ROOT / "WorkspaceFrame.json"), Collision.Model,
-                           [(S.name, S.range_min, S.range_max, S.arc_inverted, S.gui_angle_raw)
-                            for S in self.servos.values()]], sort_keys=True)
+        return ConfigurationText(self.ConfigurationInputs())
+
+    def ConfigurationInputs(self) -> list[Any]:
+        """What the configuration key is made of, taken under the lock with no disk access: Home and the geometry are
+        replaced, never changed in place, so ConfigurationText can serialise them after the lock (state_snapshot)."""
+        return [self.home_preset, self.arm_geometry, WorkspaceFrameFile.Data(), Collision.Model,
+                [(S.name, S.range_min, S.range_max, S.arc_inverted, S.gui_angle_raw) for S in self.servos.values()]]
 
     def SolverSnapshot(self):
         Snapshot = copy.copy(self)
@@ -1757,7 +2166,7 @@ class BridgeController:
             Item = Scene.get("task_object")
             if not Item:
                 raise ValueError("The held object's size is unknown; measure it before carrying it.")
-            Frame = _load_json(BACKEND_ROOT / "WorkspaceFrame.json")
+            Frame = WorkspaceFrame()
             Bounds = SceneSafety.ModelBounds(Item, Frame)
             Links, _ = Cad.Forward(self.arm_geometry, self._current_ik_angles())
             Transform = Links["gripper_link"]
@@ -1771,7 +2180,7 @@ class BridgeController:
         self.SceneCarried = Held
 
     def CollisionFrame(self):
-        Frame = _load_json(BACKEND_ROOT / "WorkspaceFrame.json")
+        Frame = WorkspaceFrame()
         Scene = getattr(self, "ActiveScene", None)
         if Scene:
             Frame["SceneObstacles"] = Scene["obstacles"]
@@ -1930,9 +2339,11 @@ class BridgeController:
     def CollisionWorld(self, Scene: bool = True):
         """The collision world: basket, body and rearward limit, plus the bound measured scene unless Scene is False.
         On a planning snapshot (PlanningSnapshot) it stops the planning once the motion was cancelled."""
-        Frame = self.CollisionFrame() if Scene else _load_json(BACKEND_ROOT / "WorkspaceFrame.json")
+        Frame = self.CollisionFrame() if Scene else WorkspaceFrame()
         World = Collision.CollisionWorld(self.arm_geometry, Frame)
         World.Cancel = getattr(self, "PlanningCancel", None)
+        # Its route search may ask the check workers (BasketCollision.PathScout): the very world, rebuilt there.
+        World.Checks, World.CheckSource = RouteChecks.Running(), (self.arm_geometry, Frame)
         return World
 
     def MotionRouteCost(self):
@@ -2041,11 +2452,12 @@ class BridgeController:
         Workers = RouteChecks.Running()
         if Workers is None or len(Path) < 3:
             return {}
-        Geometry, Frame = Check.arm_geometry, Check.CollisionFrame()
+        # One world for every request (RouteCheckPool.WorldRef): each worker builds it once, not once a request.
+        Ref = Workers.WorldRef(Check.arm_geometry, Check.CollisionFrame())
         Deadline = time.monotonic() + ROUTE_REACH_ASSIGN_SECONDS
         Previous, Asked = {Name: Servo.present_raw for Name, Servo in Check.servos.items()}, {}
         for Index, Point in enumerate(Path):
-            Asked[Index] = Workers.Submit((Geometry, Frame, *Check.EdgeCheckArguments(Previous, Point)), Deadline)
+            Asked[Index] = Workers.Submit((Ref, "edge", *Check.EdgeCheckArguments(Previous, Point)), Deadline)
             Previous = Point
         return Asked
 
@@ -2241,7 +2653,7 @@ class BridgeController:
         Reduced = dict.fromkeys(MOTOR_NAMES, ROUTE_REDUCED_REACH_RAW)
         Displaced = dict(Displaced or {})
         Previous = Previous or {Name: Servo.present_raw for Name, Servo in self.servos.items()}
-        Geometry, Frame = Check.arm_geometry, Check.CollisionFrame()
+        Ref = Workers.WorldRef(Check.arm_geometry, Check.CollisionFrame())  # Built once per worker (RouteCheckPool.WorldRef).
         Before = Path[From - 2] if From >= 2 else {Name: Servo.present_raw for Name, Servo in self.servos.items()} if From == 1 else None
         Stages = []
         for Index in range(From, len(Path)):
@@ -2275,7 +2687,7 @@ class BridgeController:
             for Stage, Tries in enumerate(Stages):
                 if Rank < len(Tries):
                     Key, Budget, Arguments = Tries[Rank]
-                    Futures[Stage][Rank] = Known[Key] = (Budget, Workers.Submit((Geometry, Frame, *Arguments), Deadline))
+                    Futures[Stage][Rank] = Known[Key] = (Budget, Workers.Submit((Ref, "edge", *Arguments), Deadline))
         for Stage, Row in enumerate(Futures):
             Futures[Stage] = [Future for _, Future in Row]
             for Rank, Future in enumerate(Futures[Stage]):
@@ -2862,12 +3274,45 @@ class BridgeController:
                          else (Target - GoalReach, Origin + StartReach) if Target < Origin
                          else (Origin - StartReach, Origin + StartReach))
             Present = self._slider_track_present(Servo)[0]
-            if not Servo.FeedbackOk or Present < Low - Allowance or Present > High + Allowance:
-                self.LatchMotionFault(f"{Name} left the checked basket route", Joint=Name,
-                                      Details={"feedback_ok": Servo.FeedbackOk, "track_raw": Present, "allowed_track_raw":
-                                               [Low - Allowance, High + Allowance], "stage_start_raw": Route["Start"][Name],
-                                               "stage_goal_raw": Point[Name]})
-                return
+            Reads = None
+            if Servo.FeedbackOk and Low - Allowance <= Present <= High + Allowance:
+                continue
+            if Servo.FeedbackOk:
+                Confirmed, Reads = self.RouteExitConfirmed(Servo, Origin, Low - Allowance, High + Allowance, Present)
+                if not Confirmed:
+                    continue
+            self.LatchMotionFault(f"{Name} left the checked basket route", Joint=Name,
+                                  Details={"feedback_ok": Servo.FeedbackOk, "track_raw": Present, "allowed_track_raw":
+                                           [Low - Allowance, High + Allowance], "stage_start_raw": Route["Start"][Name],
+                                           "stage_goal_raw": Point[Name], "reads": Reads})
+            return
+
+    def RouteExitConfirmed(self, Servo: ServoRuntime, Origin: float, Low: float, High: float,
+                           Track: float) -> tuple[bool, list[int]]:
+        """A routed joint read outside its checked envelope (Low..High track steps): its Present_Position read again on its
+        own, twice, as HoldDriftConfirmed does. (False, reads) when a re-read lies inside: a protection_glitch, and that
+        re-read is kept as its position (present_raw, HardwareRaw), so the route, or the hold that follows in the same
+        frame, works from a confirmed position rather than the garbled one. Else (True, reads): latch, whether the two
+        re-reads agree outside it (it really left the route) or not (no answer, or reads that agree with neither each
+        other nor the route: no position confirms, so there is nothing safe to route or hold from).
+        Review round 6 finding 2: one garbled position read (28 on a pan at 3479, or 2090) mid-Home latched "left the
+        checked basket route" and coasted every joint, also in the corrupt burst's frame that round 5 holds."""
+        Reads = []
+        for _ in range(2):
+            try:
+                Reads.append(int(self.bus.read("Present_Position", Servo.name, normalize=False, num_retry=1)))
+            except Exception as Exc:
+                self.RaiseIfSerialLinkLost(Exc)
+        Inside = [Each for Each in Reads if Low <= self._slider_track_near(Servo, Each % RESOLUTION, Origin) <= High]
+        if not Inside:
+            return True, Reads
+        Read = Servo.present_raw
+        Servo.present_raw, Servo.HardwareRaw = Inside[-1] % RESOLUTION, Inside[-1]
+        self.NoteProtectionGlitch(Servo.name, "Present_Position", Read,
+                                  f"read off its checked route (track {Track:.0f}, allowed {Low:.0f} to {High:.0f}), "
+                                  f"re-read {Reads}: not confirmed, the route goes on from {Servo.present_raw}",
+                                  {"read_raw": Read, "reads": Reads, "allowed_track_raw": [Low, High]})
+        return False, Reads
 
     def RouteStageSettles(self) -> bool:
         """The current waypoint is the route end, where the arm settles instead of passing."""
@@ -3108,7 +3553,17 @@ class BridgeController:
         *,
         hold_target: bool,
         num_retry: int = 0,
+        tolerant: bool = False,
     ) -> None:
+        """Hold servo at its target (hold_target) or where it is: stopped, position mode, the goal read back, the profile
+        speed restored. Raises when the read-back disagrees or a bus call fails.
+
+        tolerant (StopMotion, for a joint whose replies are reading corrupted: an active streak or a pending restart
+        check): a mismatched, garbled or unanswered read-back is read again on its own twice and raises only when both
+        re-reads also disagree (HoldDriftConfirmed's rule); a write that fails is written once more and raises only when
+        that fails too. Each tolerated one is a protection_glitch. Review round 5: the route hold that round 4 runs in the
+        corrupt burst's own frame read the pan back once, one more garbled byte (goal 28) raised "Hold read-back
+        mismatch", and Stop coasted every joint mid-Home with no fault. A joint really in another mode still raises."""
         if self.bus is None:
             return
         hold_raw = servo.target_raw if hold_target else servo.present_raw
@@ -3116,27 +3571,35 @@ class BridgeController:
         # Position mode supports multiple turns. Preserve the encoder turn count
         # when holding; modulo feedback is only for the GUI and slider arcs.
         hold_raw = Hardware + ((hold_raw - servo.present_raw + RESOLUTION // 2) % RESOLUTION - RESOLUTION // 2)
-        PreviousMode = self.bus.read("Operating_Mode", servo.name, normalize=False, num_retry=num_retry)
-        if PreviousMode == OperatingMode.VELOCITY.value:
-            self.bus.write("Goal_Speed", servo.name, 0, normalize=False, num_retry=num_retry)
-        self.bus.write("Goal_Position", servo.name, hold_raw, normalize=False, num_retry=num_retry)
-        self.bus.write("Goal_Time", servo.name, 0, normalize=False, num_retry=num_retry)
-        self.bus.write(
-            "Operating_Mode",
-            servo.name,
-            OperatingMode.POSITION.value,
-            normalize=False,
-            num_retry=num_retry,
-        )
-        self.bus.write("Goal_Position", servo.name, hold_raw, normalize=False, num_retry=num_retry)
+
+        def Write(Register: str, Value: int) -> None:
+            if tolerant:
+                self.WriteTolerated(servo, Register, Value, num_retry)
+            else:
+                self.bus.write(Register, servo.name, Value, normalize=False, num_retry=num_retry)
+
+        if tolerant:
+            PreviousVelocity = self.ReadsVelocityTwice(servo)[0]
+        else:
+            PreviousVelocity = (self.bus.read("Operating_Mode", servo.name, normalize=False, num_retry=num_retry)
+                                == OperatingMode.VELOCITY.value)
+        if PreviousVelocity:
+            Write("Goal_Speed", 0)
+        Write("Goal_Position", hold_raw)
+        Write("Goal_Time", 0)
+        Write("Operating_Mode", OperatingMode.POSITION.value)
+        Write("Goal_Position", hold_raw)
         # Verify the mode and goal before allowing a nonzero velocity command
         # to become a position profile. Zero in position mode is unlimited.
-        Mode = self.bus.read("Operating_Mode", servo.name, normalize=False, num_retry=num_retry)
-        Goal = self.bus.read("Goal_Position", servo.name, normalize=False, num_retry=num_retry)
-        if Mode != OperatingMode.POSITION.value or Goal != hold_raw:
-            raise RuntimeError(f"{servo.name} Hold read-back mismatch: mode {Mode}, goal {Goal}, expected {hold_raw}")
+        if tolerant:
+            self.ConfirmHoldReadBack(servo, hold_raw, num_retry)
+        else:
+            Mode = self.bus.read("Operating_Mode", servo.name, normalize=False, num_retry=num_retry)
+            Goal = self.bus.read("Goal_Position", servo.name, normalize=False, num_retry=num_retry)
+            if Mode != OperatingMode.POSITION.value or Goal != hold_raw:
+                raise RuntimeError(f"{servo.name} Hold read-back mismatch: mode {Mode}, goal {Goal}, expected {hold_raw}")
         ProfileSpeed = max(1, round(NORMAL_GOAL_SPEED * self.ActiveMotionSpeedPercent() / 100))
-        self.bus.write("Goal_Speed", servo.name, ProfileSpeed, normalize=False, num_retry=num_retry)
+        Write("Goal_Speed", ProfileSpeed)
         servo.command_raw = None
         servo.command_speed = 0
         servo.homing = False
@@ -3238,8 +3701,24 @@ class BridgeController:
         # The lock keeps feedback, route stage and throttle fixed throughout this dispatch.
         # Calculate the complete synchronized command once, not once for each joint. Keep
         # this local: the next frame or stage must always use fresh feedback and limits.
+        if self.StatusRestartChecks and self.TimedMotionActive():
+            # A joint's torque read off on its own re-reads and its Lock has not read 1 since (review round 3 finding 1).
+            # Skipping only its writes left it running at its last Goal_Speed, unsupervised, while the rest of the route
+            # went on without it (review round 4): the whole motion holds where it is instead, the check kept.
+            Pending = list(self.StatusRestartChecks)
+            self.HoldRouteKeepingStreaks(f"{', '.join(Pending)} torque read off on its own re-reads; holding until its "
+                                         "Lock confirms it did not restart", Details={"joints": Pending})
+            return
         RouteSpeeds = self.RouteSpeeds() if self.MotionRoute is not None else None
         for servo in self.servos.values():
+            if servo.name in self.StatusRestartChecks:
+                # Torque read off on its own re-reads and its Lock has not read 1 since: a goal write toward a target
+                # would energise a servo that may have restarted (Lock 0, Torque_Limit and profile reset), so nothing
+                # drives it until the check resolves, a frame or so later (review round 3 finding 1). A hold correction
+                # still streaming into it is stopped first (review round 4), its stream kept to resume afterwards.
+                if servo.command_speed and not self.StopForRestartCheck(servo):
+                    break
+                continue
             if servo.command_raw is None and self.MotionRoute is not None and servo.homing and not self.RouteStageSettles():
                 # Flying through: a joint parked near its waypoint rejoins the route
                 # as soon as it has to move, and never re-arms a hold in between.
@@ -3267,6 +3746,9 @@ class BridgeController:
                     if not self._slider_target_reached(servo):
                         Error = abs(self._slider_track_error(servo))
                         if Error > HOLD_REARM_MAX_ERROR_RAW:
+                            if not self.HoldDriftConfirmed(servo, Error):
+                                continue  # one position read that its re-reads contradict: read again next frame
+                            Error = abs(self._slider_track_error(servo))
                             self.LatchMotionFault(
                                 f"{servo.name} drifted {Error:.0f} steps past its hold point - re-hold manually",
                                 Joint=servo.name,
@@ -3301,6 +3783,127 @@ class BridgeController:
         if self.HoldCorrectionPaused and all(not S.Holding or S.command_raw is not None or self._slider_target_reached(S)
                                              for S in self.servos.values()):
             self.HoldCorrectionPaused = False
+
+    def TimedMotionActive(self) -> bool:
+        """A route, a calibration or another timed motion is running: more than the closed-loop hold's own corrections."""
+        return (self.MotionRoute is not None or self.CalibrationActive or bool(self.MotionDeadline)
+                or any(Servo.homing for Servo in self.servos.values()))
+
+    def StopForRestartCheck(self, Servo: ServoRuntime) -> bool:
+        """Servo, under a pending restart check (StatusRestartChecks), is still streaming a hold correction in velocity
+        mode: stop it with one Goal_Speed write and keep its stream (command_raw), which resumes once the check ends
+        (review round 4: skipping its writes left it running at its last Goal_Speed for up to StatusRestartConfirmS, or
+        longer while its torque re-reads go unanswered). False once it latched because the write failed.
+
+        The write cannot jerk the joint whatever state it is in. Operating_Mode read velocity twice on its own: 0, which
+        in velocity mode is stop (a healthy servo stops; a restarted one still in velocity mode is energised at speed
+        0, still). Anything else (a restart reverts the mode to its EEPROM position mode, a corrupted or unanswered
+        read): 1, which in position mode is the slowest profile toward its goal (a restart sets that where it is) and in
+        velocity mode 1 step/s. 0 written to a position-mode servo would be full speed. Any goal-block write energises
+        a restarted servo, but nothing writes its Lock: CheckRestarts still reads it 0 twice and latches the restart."""
+        Velocity, Modes = self.ReadsVelocityTwice(Servo)
+        Speed = 0 if Velocity else 1
+        Running = Servo.command_speed
+        try:
+            self.bus.write("Goal_Speed", Servo.name, Speed, normalize=False, num_retry=1)
+        except Exception as Exc:
+            self.RaiseIfSerialLinkLost(Exc)
+            self.LatchMotionFault(f"{Servo.name} could not be stopped while its restart check is pending: {Exc}",
+                                  Joint=Servo.name, Details={"error": str(Exc), "modes": Modes, "goal_speed": Running})
+            return False
+        Servo.command_speed = 0  # stopped: 1 is the slowest profile, or 1 step/s; the resumed stream writes its speed
+        Servo.last_write_s = time.perf_counter()
+        self.NoteProtectionGlitch(Servo.name, "Goal_Speed", Speed,
+                                  "hold correction stopped while its restart check is pending (torque read off on its own "
+                                  "re-reads); it resumes once its Lock reads 1",
+                                  {"modes": Modes, "goal_speed_before": Running, "present_raw": Servo.present_raw,
+                                   "target_raw": Servo.target_raw})
+        return True
+
+    def ReadsVelocityTwice(self, Servo: ServoRuntime) -> tuple[bool, list[int]]:
+        """Servo's Operating_Mode read on its own twice: (True when both read velocity, the reads). A garbled or unanswered
+        read is not velocity, so Goal_Speed 0 (full speed in position mode) is only ever written to a confirmed one."""
+        Modes = []
+        for _ in range(2):
+            try:
+                Modes.append(int(self.bus.read("Operating_Mode", Servo.name, normalize=False, num_retry=1)))
+            except Exception as Exc:
+                self.RaiseIfSerialLinkLost(Exc)
+        return Modes == [OperatingMode.VELOCITY.value] * 2, Modes
+
+    def WriteTolerated(self, Servo: ServoRuntime, Register: str, Value: int, NumRetry: int) -> None:
+        """One write of a tolerant hold (_stop_slider_velocity_locked's tolerant): a failure (a garbled or missing status
+        reply) is written once more, the same value, and raises only when that fails too; a protection_glitch otherwise."""
+        try:
+            self.bus.write(Register, Servo.name, Value, normalize=False, num_retry=NumRetry)
+            return
+        except Exception as Exc:
+            self.RaiseIfSerialLinkLost(Exc)
+            First = Exc
+        self.bus.write(Register, Servo.name, Value, normalize=False, num_retry=NumRetry)
+        self.NoteProtectionGlitch(Servo.name, Register, Value,
+                                  f"hold write failed once while its replies read corrupted ({First}); written again",
+                                  {"error": str(First)})
+
+    def ConfirmHoldReadBack(self, Servo: ServoRuntime, HoldRaw: int, NumRetry: int) -> None:
+        """A tolerant hold's read-back: Operating_Mode must read position and Goal_Position HoldRaw. A register that reads
+        otherwise (garbled, or no reply) is read again on its own twice; it raises "Hold read-back mismatch" only when
+        both re-reads also disagree (a joint really in another mode, or a goal that did not take). Otherwise a
+        protection_glitch: the hold stands, and the frames after it read the joint as usual.
+
+        Operating_Mode is stricter (review round 6, .review-round5.md finding 1): position (0) is the likeliest garble, so
+        one re-read reading it must not outvote velocity. It stands only with no velocity read among the re-reads, and,
+        when the first read was velocity, both re-reads reading position. [1, 0, 1] and [1, 1, 0] raise: the hold would
+        otherwise restore the profile speed (Goal_Speed 200) to a joint really still in velocity mode, unsupervised."""
+        Bad, Tolerated = [], []
+        for Register, Expected in (("Operating_Mode", OperatingMode.POSITION.value), ("Goal_Position", HoldRaw)):
+            Reads = []
+            for _ in range(3):
+                try:
+                    Reads.append(int(self.bus.read(Register, Servo.name, normalize=False, num_retry=NumRetry)))
+                except Exception as Exc:
+                    self.RaiseIfSerialLinkLost(Exc)
+                    Reads.append(None)
+                if Reads[0] == Expected:
+                    break
+            if Reads[0] == Expected:
+                continue
+            Confirmed = Expected in Reads[1:]
+            if Register == "Operating_Mode":
+                Velocity = OperatingMode.VELOCITY.value
+                Confirmed = Confirmed and Velocity not in Reads[1:] and (Reads[0] != Velocity
+                                                                         or Reads[1:] == [Expected, Expected])
+            (Tolerated if Confirmed else Bad).append((Register, Reads))
+        if Bad:
+            raise RuntimeError(f"{Servo.name} Hold read-back mismatch: "
+                               + ", ".join(f"{Register} read {Reads[0]}, re-read {Reads[1:]}" for Register, Reads in Bad)
+                               + f"; expected mode {OperatingMode.POSITION.value}, goal {HoldRaw}")
+        for Register, Reads in Tolerated:
+            self.NoteProtectionGlitch(Servo.name, Register, Reads[0],
+                                      f"hold read-back read {Reads[0]}, re-read {Reads[1:]}: not confirmed, the hold stands",
+                                      {"reads": Reads, "hold_raw": HoldRaw})
+
+    def HoldDriftConfirmed(self, Servo: ServoRuntime, Error: float) -> bool:
+        """A holding joint read more than HOLD_REARM_MAX_ERROR_RAW from its hold point: its Present_Position read again on
+        its own, twice. True (and the re-read kept) when both agree within StatusReassertAgreeRaw and are as far off; else a
+        protection_glitch, the last re-read kept, and False. One corrupted position read (28 on a pan at 3479, review round
+        3 finding 5) latched "drifted 645 steps" with the joint where it held."""
+        Reads = []
+        for _ in range(2):
+            try:
+                Reads.append(int(self.bus.read("Present_Position", Servo.name, normalize=False, num_retry=1)))
+            except Exception as Exc:
+                self.RaiseIfSerialLinkLost(Exc)
+        Far = [self._circular_raw_distance(Each, Servo.target_raw) > HOLD_REARM_MAX_ERROR_RAW for Each in Reads]
+        Read = Servo.present_raw
+        if Reads:
+            Servo.present_raw, Servo.HardwareRaw = Reads[-1] % RESOLUTION, Reads[-1]
+        if len(Reads) == 2 and all(Far) and self._circular_raw_distance(*Reads) <= StatusReassertAgreeRaw:
+            return True
+        self.NoteProtectionGlitch(Servo.name, "Present_Position", Read,
+                                  f"read {Error:.0f} steps off its hold point, re-read {Reads or 'no reply'}: not confirmed",
+                                  {"read_raw": Read, "reads": Reads, "target_raw": Servo.target_raw})
+        return False
 
     def refresh(self) -> None:
         Asked = time.perf_counter()
@@ -3501,19 +4104,25 @@ class BridgeController:
                        for Name, Servo in self.servos.items()},
         })
 
-    def _check_servo_faults_locked(self) -> None:
-        """Every joint's hardware status and torque (ReadServoStatus), read again at once when they show anything.
+    def _check_servo_faults_locked(self, Names: list[str] | None = None) -> None:
+        """Every joint's (or Names') hardware status and torque (ReadServoStatus), read again at once when they show anything.
 
         Only a reading the next one confirms latches (ProtectionVersion v2-confirmed): a fault bit or torque off read twice
-        in a row latches that fault, two failed or corrupted readings in a row "Cannot read". A bad reading the re-read
-        contradicts is a protection_glitch: 2026-10-12 16:32:43 one reply read torque off with 5.6 V, 90 C and load
-        0xF901 (the signature of every "torque unexpectedly off" recorded since 2026-09-28) and coasted a holding arm
-        whose positions never sagged. A servo that really restarted keeps torque off on the re-read: caught one reading,
-        a few milliseconds, later than before. Nothing is written between the two readings.
+        in a row (with telemetry a servo can report) latches that fault, two failed readings in a row "Cannot read". A
+        bad reading the re-read contradicts is a protection_glitch: 2026-10-12 16:32:43 one reply read torque off with
+        5.6 V, 90 C and load 0xF901 (the signature of every "torque unexpectedly off" recorded since 2026-09-28) and
+        coasted a holding arm whose positions never sagged. A servo that really restarted keeps torque off on the re-read:
+        caught one reading, a few milliseconds, later than before. Nothing is written between the two readings.
+
+        A pair with a corrupted reply in it (CorruptStatusReply: telemetry no servo reports, or that did not read in full)
+        confirms nothing, whatever the other reading said, and never latches on its own: 2026-10-22 two in a row (load
+        64001, 0 V, 90 C) ended a task with every joint on its target. It starts or continues the joint's streak, which
+        confirms over time and over independent reads instead (CorruptStatusPersists).
         """
         if not self.arm_connected or self.bus is None:
             if self.faults:
                 self.faults = {}
+            self.EndStatusStreaks()
             return
         new_unload: list[str] = []
         NewFaults: list[dict[str, Any]] = []
@@ -3530,21 +4139,38 @@ class BridgeController:
                     self.RaiseIfSerialLinkLost(Exc)
                 return Exc
 
-        for name in MOTOR_NAMES:
+        Now = time.monotonic()
+        for name in MOTOR_NAMES if Names is None else Names:
             Reading = Read(name)
             if isinstance(Reading, Exception) or Reading[0]:
                 Again = Read(name)
+                Failed = [Each for Each in (Reading, Again)
+                          if isinstance(Each, Exception) and not isinstance(Each, CorruptStatusReply)]
                 if not isinstance(Again, Exception) and not Again[0]:
                     self.NoteProtectionGlitch(name, *self.StatusGlitchDetails(Reading))
                     Reading = Again
-                elif isinstance(Again, Exception) and isinstance(Reading, Exception):
+                elif len(Failed) == 2:
                     if self.torque_enabled and not self.MotionFault:
                         self.LatchMotionFault(f"Cannot read {name} protection/torque status: {Again}", Joint=name,
-                                              Details={"error": str(Again), "first_error": str(Reading),
-                                                       **({"telemetry": Again.Telemetry} if isinstance(Again, CorruptStatusReply) else {})})
+                                              Details={"error": str(Again), "first_error": str(Reading)})
                     continue
-                elif not isinstance(Again, Exception):
-                    Reading = Again  # confirmed (or a failed reading confirmed by this one): the latest fault reading
+                elif Failed or isinstance(Reading, CorruptStatusReply) or isinstance(Again, CorruptStatusReply):
+                    # Corrupted or unanswered, then anything, or anything then corrupted or unanswered: unconfirmed
+                    # (review round 1 finding 8: a plausible reading paired with a corrupted one latched, in either
+                    # order; round 3 finding 3: one bad byte plus one missed reply latched, in either order).
+                    Confirmed = self.CorruptStatusPersists(name, Reading, Again)
+                    if Confirmed is None:
+                        continue
+                    Reading = Confirmed  # a fault bit with plausible telemetry, read again in a later frame of the streak
+                else:
+                    Reading = Again  # two plausible fault readings in a row: confirmed, the latest one
+            self.StatusCorruptStreaks.pop(name, None)
+            Chain = self.StatusCorruptChains.get(name)
+            if Chain is not None:
+                if Now - Chain["LastSeen"] > StatusCorruptChainGapS:
+                    del self.StatusCorruptChains[name]
+                else:
+                    Chain["Frames"].append((Now, False))
             bits, Telemetry = Reading
             unload = [label for bit, label in FAULT_UNLOAD_BITS.items() if bits & (1 << bit)]
             if bits & (1 << 7):
@@ -3566,11 +4192,280 @@ class BridgeController:
                     NewFaults.append(record)
             self.faults[name] = record
         self.LatchServoFaults(new_unload, NewFaults)
+        self.CheckRestarts(Names)
+
+    def CheckRestarts(self, Names: list[str] | None = None) -> None:
+        """Each joint (of Names) whose torque read off on its own re-reads in a streak (StatusRestartChecks), once its
+        torque no longer reads off: its Lock read on its own, twice (review round 3 finding 1). A goal write (a hold
+        correction, a route's, Stop's) energises a restarted servo, so torque reading on again proves nothing; Lock does,
+        as only the bridge closes it (Hold, connect) and a restart opens it. Both 1: no restart, the check ends. Both 0:
+        latched as a restart, whatever the telemetry read. Neither for StatusRestartConfirmS: latched as unconfirmed. A
+        joint whose torque still reads off is left to StatusTorqueOff's own StatusTorqueOffConfirmS."""
+        Now = time.monotonic()
+        for Name in list(self.StatusRestartChecks):
+            if self.MotionFault or not self.torque_enabled or self.bus is None:
+                return
+            if Names is not None and Name not in Names:
+                continue
+            Streak = self.StatusCorruptStreaks.get(Name)
+            if Streak is not None and Streak["TorqueOffSince"] is not None:
+                continue
+            Locks = []
+            for _ in range(2):
+                try:
+                    Locks.append(int(self.bus.read("Lock", Name, normalize=False, num_retry=1)))
+                except Exception as Exc:
+                    self.RaiseIfSerialLinkLost(Exc)
+            Pending = Now - self.StatusRestartChecks[Name]
+            Details = {"locks": Locks, "pending_s": round(Pending, 2)}
+            if len(Locks) == 2 and all(Each == 1 for Each in Locks):
+                del self.StatusRestartChecks[Name]
+                self.NoteProtectionGlitch(Name, "Lock", 1, "torque read off on its own re-reads, now on, Lock reads 1: "
+                                          "no restart", Details)
+            elif len(Locks) == 2 and all(Each == 0 for Each in Locks):
+                self.LatchMotionFault(f"Servo protection/torque fault ({Name.replace('_', ' ')} restarted: its torque read "
+                                      "off on its own re-reads and its Lock still reads 0)", Joint=Name, Details=Details)
+                return
+            elif Pending > StatusRestartConfirmS:
+                self.LatchMotionFault(f"Cannot confirm {Name} did not restart: its torque read off on its own re-reads and "
+                                      f"its Lock read {Locks or 'no reply'} for {Pending:.1f} s", Joint=Name, Details=Details)
+                return
+
+    def CorruptStatusPersists(self, Name: str, Reading: tuple[int, dict[str, Any]] | Exception,
+                              Again: tuple[int, dict[str, Any]] | Exception) -> tuple[int, dict[str, Any]] | None:
+        """Name's status pair had a corrupted reply in it: a protection_glitch (once per streak, with the telemetry), never
+        a fault by itself. The streak (StatusStreakGapS) confirms over time and over independent reads instead:
+        - a fault bit read with telemetry a servo can report in two frames of the streak is confirmed: returned, and
+          latched as any confirmed fault;
+        - torque read off is read again on its own and re-asserted (StatusTorqueOff);
+        - past StatusCorruptMaxS the streak latches whatever the position;
+        - on a timed route (no hold point to judge by) the route is held where it is past StatusCorruptHoldS;
+        - a gripper holding an object (GraspHold: its target follows its jaws, so position cannot show a lost grip)
+          latches past StatusCorruptHoldS;
+        - a holding joint latches once it is StatusCorruptHoldDriftRaw further from its hold point than when the streak
+          began (or its hold point last changed), two frames in a row: a resting joint (a paused hold correction, a sag
+          the correction is closing) is not a lost hold (review round 1 findings 9, 12).
+        Missing position feedback is not judged here: it latches "Lost joint feedback" in _read_positions_locked, which
+        every caller runs first (review round 1 finding 13)."""
+        Now, Servo = time.monotonic(), self.servos[Name]
+        # The reading that confirms nothing: the corrupted one, else the failed one (round 3 finding 3).
+        Corrupt = next((Each for Each in (Again, Reading) if isinstance(Each, CorruptStatusReply)), None) or next(
+            Each for Each in (Again, Reading) if isinstance(Each, Exception))
+        Shown = next((Each for Each in (Reading, Again) if not isinstance(Each, Exception)), Corrupt)
+        Streak = self.StatusCorruptStreaks.get(Name)
+        if Streak is None or Now - Streak["LastSeen"] > StatusStreakGapS:
+            Streak = self.StatusCorruptStreaks[Name] = {
+                "Since": Now, "LastSeen": Now, "StartRaw": Servo.present_raw, "HoldRaw": None, "HoldTarget": None,
+                "AwayFrames": 0, "FaultBits": None, "TorqueOffSince": None, "Reasserted": False, "ReassertRefusal": None}
+            Register, Value, _, Details = self.StatusGlitchDetails(Corrupt if isinstance(Corrupt, CorruptStatusReply) else Shown)
+            self.NoteProtectionGlitch(Name, Register, Value,
+                                      "corrupted status reply read again; watched until it reads clean"
+                                      if isinstance(Corrupt, CorruptStatusReply) else
+                                      "fault reading paired with an unanswered one; watched until it reads clean",
+                                      dict(Details, error=str(Again), first_error=str(Reading), present_raw=Servo.present_raw,
+                                           target_raw=Servo.target_raw))
+        Streak["LastSeen"] = Now
+        Chain = self.StatusCorruptChains.get(Name)
+        if Chain is None or Now - Chain["LastSeen"] > StatusCorruptChainGapS:
+            Chain = self.StatusCorruptChains[Name] = {"Since": Now, "LastSeen": Now, "Frames": collections.deque()}
+        Chain["LastSeen"] = Now
+        Chain["Frames"].append((Now, True))
+        while Chain["Frames"][0][0] < Now - StatusCorruptMaxS:
+            Chain["Frames"].popleft()
+        Recent = sum(1 for _, Each in Chain["Frames"] if Each)  # of the last StatusCorruptMaxS's frames, corrupted
+        Frames = len(Chain["Frames"])
+        if not self.torque_enabled or self.MotionFault:
+            return None
+        Lasted = Now - Streak["Since"]
+        Chained = Now - Chain["Since"]
+        # The readings that answered (a corrupted one answered too: its bits and Torque_Enable read before its telemetry).
+        Answered = [Each for Each in (Reading, Again) if not isinstance(Each, Exception) or isinstance(Each, CorruptStatusReply)]
+        AnsweredBits = [Each.Bits if isinstance(Each, CorruptStatusReply) else Each[0] for Each in Answered]
+        Bits = 0
+        for Each in AnsweredBits:
+            Bits |= Each
+        Details = {"error": str(Again), "first_error": str(Reading), "telemetry": getattr(Corrupt, "Telemetry", None),
+                   "corrupt_s": round(Lasted, 2), "present_raw": Servo.present_raw, "target_raw": Servo.target_raw,
+                   "start_raw": Streak["StartRaw"], "chain_s": round(Chained, 2),
+                   "chain_frames": {"corrupt": Recent, "clean": Frames - Recent}}
+        if Bits & (1 << 7):
+            Why = self.StatusTorqueOff(Name, Streak, Now, Bits)
+            if Why:
+                self.LatchMotionFault(f"Servo protection/torque fault ({Name.replace('_', ' ')} torque unexpectedly off: {Why})",
+                                      Joint=Name, Details=dict(Details, torque_off_s=round(Now - Streak["TorqueOffSince"], 2),
+                                                               reasserted=Streak["Reasserted"]))
+                return None
+        elif AnsweredBits:
+            Streak["TorqueOffSince"] = None  # Torque_Enable, read before the telemetry, read on
+        # A fault bit read with telemetry a servo can report, in two frames of the streak: confirmed over time. Torque
+        # (bit 7) is left to its own re-reads above.
+        Plausible = next((Each for Each in (Again, Reading) if not isinstance(Each, Exception) and Each[0] & 0x7F), None)
+        if Plausible is not None:
+            if Streak["FaultBits"] == Plausible[0] & 0x7F:
+                return Plausible[0] & 0x7F, Plausible[1]
+            Streak["FaultBits"] = Plausible[0] & 0x7F
+        if Lasted > StatusCorruptMaxS:
+            self.LatchMotionFault(f"Cannot read {Name} protection/torque status: its replies read corrupted for {Lasted:.1f} s "
+                                  f"(limit {StatusCorruptMaxS:g} s): {Corrupt}", Joint=Name, Details=Details)
+            return None
+        if Chained > StatusCorruptMaxS and 2 * Recent >= Frames:
+            # Corrupted on most frames, a clean one between (review round 3 finding 2): the cap holds for that too.
+            self.LatchMotionFault(f"Cannot read {Name} protection/torque status: its replies read corrupted on {Recent} "
+                                  f"of its last {Frames} frames, a chain of {Chained:.1f} s "
+                                  f"(limit {StatusCorruptMaxS:g} s): {Corrupt}", Joint=Name, Details=Details)
+            return None
+        if self.MotionRoute is not None or self.MotionDeadline:
+            if Lasted > StatusCorruptHoldS:
+                # A route has no hold point to judge by and must not carry on blind: hold where it is, torque on.
+                self.HoldRouteKeepingStreaks(f"{Name} status replies read corrupted for {Lasted:.1f} s",
+                                             Details=dict(Details, joint=Name))
+            return None
+        if Servo.GraspHold:
+            if Lasted > StatusCorruptHoldS:
+                self.LatchMotionFault(f"Cannot read {Name} protection/torque status for {Lasted:.1f} s while it holds an object "
+                                      f"(its position cannot show a lost grip): {Corrupt}", Joint=Name, Details=Details)
+            return None
+        if Streak["HoldRaw"] is None or Streak["HoldTarget"] != Servo.target_raw:
+            Streak.update(HoldRaw=Servo.present_raw, HoldTarget=Servo.target_raw, AwayFrames=0)
+        Away = (self._circular_raw_distance(Servo.present_raw, Servo.target_raw)
+                - self._circular_raw_distance(Streak["HoldRaw"], Servo.target_raw))
+        Streak["AwayFrames"] = Streak["AwayFrames"] + 1 if Away > StatusCorruptHoldDriftRaw else 0
+        if Streak["AwayFrames"] >= 2:
+            self.LatchMotionFault(f"Cannot read {Name} protection/torque status and it lost hold: {Away} steps further from "
+                                  f"its hold point than when its replies began reading corrupted: {Corrupt}", Joint=Name,
+                                  Details=dict(Details, away_raw=Away, hold_start_raw=Streak["HoldRaw"]))
+        return None
+
+    def StatusTorqueOff(self, Name: str, Streak: dict[str, Any], Now: float, Bits: int) -> str | None:
+        """A corrupted status pair read Name's torque off (bit 7). Torque_Enable is its own register, read before the
+        telemetry, so corrupted telemetry never throws it away (review round 1 finding 1): it is read again on its own,
+        twice. Read on: nothing more. Read off: the first time in the streak it is re-asserted, where that is safe
+        (TorqueReassertRefusal), with a goal write at the joint's present position (a goal write energises these servos)
+        and read once more. Why to latch, once it has stayed off on these re-reads for StatusTorqueOffConfirmS, else None.
+        A servo that restarted (Lock 0 on its own re-reads) is never re-asserted (review round 2 finding 1): the goal write
+        energised it, nothing restored its Lock, Torque_Limit or profile, and the next route tripped mid-move on the slow
+        EEPROM replies of an open lock. It stays off, so it latches StatusTorqueOffConfirmS later, the arm still holding.
+        Round 3: torque read off here is remembered (StatusRestartChecks) until its Lock reads 1, as another goal write can
+        energise a restarted servo first (CheckRestarts, finding 1); and the re-assert's goal is the joint's position re-read
+        and confirmed on its own (ConfirmedReassertRaw, finding 5), never one unchecked reading from the burst.
+        A re-assert is a visible event (torque_reasserted, and state.protection.glitches)."""
+        Reads = []
+        for _ in range(2):
+            try:
+                Reads.append(int(self.bus.read("Torque_Enable", Name, normalize=False, num_retry=1)))
+            except Exception as Exc:
+                self.RaiseIfSerialLinkLost(Exc)
+        if not Reads:
+            return None  # unknown: read again next frame (StatusCorruptMaxS bounds it)
+        if any(Reads):
+            Streak["TorqueOffSince"] = None
+            return None
+        if Streak["TorqueOffSince"] is None:
+            Streak["TorqueOffSince"] = Now
+        # Off on its own re-reads: remembered until its Lock reads 1 (CheckRestarts), whatever energises it meanwhile
+        # (review round 3 finding 1: a hold correction or a route's goal write did, and the restart was never latched).
+        self.StatusRestartChecks.setdefault(Name, Now)
+        if not Streak["Reasserted"]:
+            Streak["Reasserted"] = True
+            Servo = self.servos[Name]
+            Refusal = self.TorqueReassertRefusal(Name, Bits)
+            Raw = None
+            if Refusal is None:
+                self.StatusRestartChecks.pop(Name, None)  # its Lock read 1 on its own re-reads, twice: no restart
+                Raw = self.ConfirmedReassertRaw(Name, Streak)
+                if isinstance(Raw, str):
+                    Refusal, Raw = Raw, None
+            if Refusal is None:
+                On = None
+                try:
+                    if Servo.GraspHold:
+                        self.SqueezeGrasp(Servo, Raw % RESOLUTION)  # keeps the bounded squeeze on the object
+                    else:
+                        self.bus.write("Goal_Position", Name, Raw, normalize=False, num_retry=1)
+                    On = int(self.bus.read("Torque_Enable", Name, normalize=False, num_retry=1))
+                except Exception as Exc:
+                    self.RaiseIfSerialLinkLost(Exc)
+                    Refusal = f"the goal write failed: {Exc}"
+                Note = (f"torque read off on its own re-reads, Lock 1 (no restart); goal written at its present position "
+                        f"(re-read {Raw}), torque then read {'on' if On else 'unknown' if On is None else 'off'}")
+                self.ProtectionGlitches.append({"servo": Name, "register": "Torque_Enable", "value": 0, "note": Note,
+                                                "torque_after": On, "bits": Bits, "goal_raw": Raw, "at_s": time.time()})
+                self.RecordBridgeEvent("torque_reasserted", f"{Name} {Note}", Name,
+                                       {"present_raw": Servo.present_raw, "goal_raw": Raw, "torque_after": On, "bits": Bits})
+                if On:
+                    Streak["TorqueOffSince"] = None
+                    return None
+            Streak["ReassertRefusal"] = Refusal
+        Off = Now - Streak["TorqueOffSince"]
+        if Off < StatusTorqueOffConfirmS:
+            return None
+        Refusal = Streak["ReassertRefusal"]
+        return (f"read off on its own re-reads for {Off:.1f} s, "
+                + (f"not re-asserted: {Refusal}" if Refusal else "also after a goal write at its present position"))
+
+    def TorqueReassertRefusal(self, Name: str, Bits: int) -> str | None:
+        """Why a torque read off may not be re-asserted with a goal write at Name's present position, or None. A goal write
+        clears the servo's own protection unload, so never on a joint that reports one (as StopMotion), never without a
+        fresh position, never into a stream (its own writes energise it) or outside position mode (a velocity-mode joint
+        would resume its last speed), and only with Lock read 1 on its own re-reads, twice: Hold and connect close it on
+        every joint, a restart (brown-out) opens it (Lock 0), and corrupted telemetry's own Lock (28 on 2026-10-22) is
+        never used (review round 2 finding 1)."""
+        Servo = self.servos[Name]
+        UnloadMask = sum(1 << Bit for Bit in FAULT_UNLOAD_BITS)
+        if not Servo.FeedbackOk:
+            return "its position did not read"
+        if Bits & UnloadMask or int(getattr(self.bus, "PacketFaults", {}).get(Name) or 0) & UnloadMask:
+            return "it reports a protection unload"
+        if Servo.command_raw is not None:
+            return "it is streaming a command"
+        try:
+            Mode = self.bus.read("Operating_Mode", Name, normalize=False, num_retry=1)
+        except Exception as Exc:
+            self.RaiseIfSerialLinkLost(Exc)
+            return f"its mode did not read: {Exc}"
+        if Mode != OperatingMode.POSITION.value:
+            return "it is not in position mode"
+        Locks = []
+        for _ in range(2):
+            try:
+                Locks.append(int(self.bus.read("Lock", Name, normalize=False, num_retry=1)))
+            except Exception as Exc:
+                self.RaiseIfSerialLinkLost(Exc)
+        if Locks and all(Each == 0 for Each in Locks):
+            return f"its Lock read 0 on its own re-reads ({len(Locks)}): the servo restarted"
+        if len(Locks) < 2 or any(Each != 1 for Each in Locks):
+            return f"its Lock did not read 1 on its own re-reads ({Locks or 'no reply'})"
+        return None
+
+    def ConfirmedReassertRaw(self, Name: str, Streak: dict[str, Any]) -> int | str:
+        """The goal for re-asserting Name's torque: its Present_Position read again on its own, twice, or why it did not
+        confirm (review round 3 finding 5: one corrupted position read in the burst, 28 on a pan at 3479, was written as
+        the goal and drove the joint 645 steps). Both re-reads must agree with each other and with the frame's reading
+        within StatusReassertAgreeRaw, and lie within StatusCorruptHoldDriftRaw of where the streak began, its hold
+        point or its target. Returns the last re-read (the encoder's raw value, turns included)."""
+        Servo = self.servos[Name]
+        Reads = []
+        for _ in range(2):
+            try:
+                Reads.append(int(self.bus.read("Present_Position", Name, normalize=False, num_retry=1)))
+            except Exception as Exc:
+                self.RaiseIfSerialLinkLost(Exc)
+                return f"its position did not confirm (a re-read failed: {Exc})"
+        Frame = Servo.HardwareRaw if Servo.HardwareRaw is not None else Servo.present_raw
+        Apart = max(self._circular_raw_distance(A, B) for A, B in ((Reads[0], Reads[1]), (Reads[0], Frame), (Reads[1], Frame)))
+        if Apart > StatusReassertAgreeRaw:
+            return f"its position did not confirm (read {Frame}, re-read {Reads[0]} and {Reads[1]})"
+        Known = [Each for Each in (Streak["StartRaw"], Streak["HoldRaw"], Servo.target_raw) if Each is not None]
+        Off = min(self._circular_raw_distance(Reads[-1], Each) for Each in Known) if Known else 0
+        if Off > StatusCorruptHoldDriftRaw:
+            return f"its position did not confirm ({Reads[-1] % RESOLUTION} is {Off} steps from where it held)"
+        return Reads[-1]
 
     def ReadServoStatus(self, Name: str) -> tuple[int, dict[str, Any]]:
         """One reading of Name's status: Hardware_Error_Status, bit 7 set for torque reading off while it should be on, and,
         when that shows anything, the telemetry its fault record keeps (load, supply, temperature, Lock: 0 after a restart).
-        Raises when a read fails, or CorruptStatusReply when that telemetry is one no servo reports."""
+        Raises when a read fails, or CorruptStatusReply when that telemetry is one no servo reports or did not read in full
+        (a fault reading whose telemetry failed passed as plausible and latched: review round 1 finding 8)."""
         # One retry, as for position feedback: a single dropped packet is not a lost servo.
         Bits = int(self.bus.read("Hardware_Error_Status", Name, normalize=False, num_retry=1))
         TorqueOn = bool(self.bus.read("Torque_Enable", Name, normalize=False, num_retry=1))
@@ -3578,13 +4473,15 @@ class BridgeController:
             Bits |= 1 << 7
         Telemetry: dict[str, Any] = {}
         if Bits:
-            try:
-                for Key, Register in (("load", "Present_Load"), ("voltage_dv", "Present_Voltage"),
-                                      ("temperature_c", "Present_Temperature"), ("lock", "Lock")):
+            Missing = None
+            for Key, Register in (("load", "Present_Load"), ("voltage_dv", "Present_Voltage"),
+                                  ("temperature_c", "Present_Temperature"), ("lock", "Lock")):
+                try:
                     Telemetry[Key] = int(self.bus.read(Register, Name, normalize=False, num_retry=0))
-            except Exception:
-                pass
-            Impossible = self.ServoTelemetryImpossible(Telemetry)
+                except Exception as Exc:
+                    Missing = f"telemetry that did not read in full ({Register}: {Exc})"
+                    break
+            Impossible = self.ServoTelemetryImpossible(Telemetry) or Missing
             if Impossible:
                 raise CorruptStatusReply(f"{Name} status {Bits} came with {Impossible}", Bits, Telemetry)
         return Bits, Telemetry
@@ -3593,12 +4490,11 @@ class BridgeController:
     def ServoTelemetryImpossible(Telemetry: dict[str, Any]) -> str | None:
         """What in a status reading's telemetry no servo can report, or None (ServoLoadMaximum, ServoVoltageRangeDv,
         ServoHotC). The real readings on record are 27-38 C at about 8.9 V; every "torque unexpectedly off" since
-        2026-09-28 came with 89-90 C and 0-5.6 V or 15.2 V, and a load with bits over the register's range."""
+        2026-09-28 came with 89-90 C and 0-5.6 V or 15.2 V, and a load with bits over the register's range. A supply
+        over the 14.0 V rating is not impossible: a servo reports up to 25.5 V, and a wrong power supply is a real fault."""
         Load, Volts, Celsius = Telemetry.get("load"), Telemetry.get("voltage_dv"), Telemetry.get("temperature_c")
         if Load is not None and abs(Load) > ServoLoadMaximum:
             return f"load {Load}, beyond the register's 0-{ServoLoadMaximum}"
-        if Volts is not None and Volts > ServoVoltageRangeDv[1]:
-            return f"supply {Volts / 10:.1f} V, over the servo's {ServoVoltageRangeDv[1] / 10:.1f} V"
         if Volts is not None and Celsius is not None and Volts < ServoVoltageRangeDv[0] and Celsius >= ServoHotC:
             return f"supply {Volts / 10:.1f} V at {Celsius} C"
         return None
@@ -3794,6 +4690,7 @@ class BridgeController:
             return self.emergency_stop(Reason="Arm disconnected (coast)")
         with self.lock:
             self.EndHandGuide("teardown", "Arm disconnected", Release=False)  # (disconnected holding, as asked)
+            self.EndStatusStreaks()
             bus = self.bus
             if self.MotionRoute is not None:
                 self.RecordBridgeEvent("motion_abort", "Arm disconnected without coasting")
@@ -3826,6 +4723,7 @@ class BridgeController:
         """
         with self.lock:
             self.EndHandGuide("teardown", Reason)
+            self.EndStatusStreaks()
             if self.MotionRoute is not None:
                 self.RecordBridgeEvent("motion_abort", Reason)
             self.MotionEpoch += 1
@@ -3970,6 +4868,7 @@ class BridgeController:
             Action = "Coast" if self.torque_enabled else "Hold"
             try:
                 self.MotionEpoch += 1
+                self.EndStatusStreaks()
                 if self.torque_enabled:
                     Guiding = self.HandGuide is not None
                     self.EndHandGuide("teardown", "Coast pressed")
@@ -4072,7 +4971,10 @@ class BridgeController:
     def SendJointMotion(self, Targets, Label, SceneId=None, SceneRequired=False, SceneCarry=None, Home=False):
         """A joint-space move to Targets (raw, limited). Home: Home's route (HomeGripperPlan, PlanHomeRoute)."""
         Asked = time.monotonic()
+        Starting = object()
+        self.MotionsStarting.add(Starting)  # no depth-camera open starts from here until the route does (or is refused)
         try:
+            self.WaitForCameraOpen()
             with self.lock:
                 if self.CalibrationActive:
                     raise ValueError("Stop calibration before using manual controls")
@@ -4088,7 +4990,8 @@ class BridgeController:
             Snapshot.BindScene(SceneId, SceneRequired, SceneCarry)
             Path = Snapshot.PlanHomeRoute(Targets, Gripper) if Home else Snapshot.PlanMotionRoute(Targets)
             FullAllowance = Snapshot.StartHasAllowance()
-            with self.lock:
+            self.WaitForCameraOpen()
+            with self.lock, self.MotionStartGate():
                 if Epoch != self.MotionEpoch or Bus is not self.bus or Configuration != self.ConfigurationKey():
                     raise ValueError("Motion cancelled: arm state changed during route planning")
                 self.MotionPreflight()
@@ -4114,6 +5017,8 @@ class BridgeController:
                 return True, self.status
         except Exception as Exc:
             return False, str(Exc)
+        finally:
+            self.MotionsStarting.discard(Starting)
 
     def move_servo(self, name: str, raw: Any, SceneId=None, SceneRequired=False, SceneCarry=None) -> tuple[bool, str]:
         if name not in self.servos:
@@ -4567,7 +5472,7 @@ class BridgeController:
     # Each solved pose and transition still passes the basket checks.
     # The sampling Z range selects observations; it is not a motion height limit.
     def WorkspaceOffset(self) -> dict[str, float]:
-        Frame = _load_json(BACKEND_ROOT / "WorkspaceFrame.json")
+        Frame = WorkspaceFrameFile.Data()
         RobotFrame = Frame.get("RobotFrame")
         if RobotFrame:
             Pan = forward_joint_positions(self.arm_geometry, {})[0]
@@ -4657,7 +5562,7 @@ class BridgeController:
             elbow = self.elbow_mode
             Configuration = self.ConfigurationKey()
             PathSnapshot = self.SolverSnapshot()
-            Sampling = _load_json(BACKEND_ROOT / "WorkspaceFrame.json")["CalibrationSampling"]
+            Sampling = WorkspaceFrame()["CalibrationSampling"]
             Offset = self.WorkspaceOffset()
         if View == "Facing":
             # A camera facing the arm keeps its own plan: it sees the tape with the gripper
@@ -4751,7 +5656,10 @@ class BridgeController:
                 GripperRaw: Any = None, SceneId=None, SceneRequired=False, SceneCarry=None) -> tuple[bool, str]:
         """A Cartesian move. GripperRaw: a gripper goal that opens the jaws on the way (GRIPPER_WITH_TIP_OPEN_BY)."""
         Asked = time.monotonic()
+        Starting = object()
+        self.MotionsStarting.add(Starting)  # no depth-camera open starts from here until the route does (or is refused)
         try:
+            self.WaitForCameraOpen()
             with self.lock:
                 if self.CalibrationActive and not PlanId:
                     raise ValueError("Stop calibration before another motion")
@@ -4806,7 +5714,8 @@ class BridgeController:
                 SelfCalibration.RecordEvent("BasketRoute", {"plan_id": PlanId, "start_raw": StartRaw,
                     "waypoints_raw": Path, "collision_version": Collision.Model["Version"],
                     "route_planner_version": Collision.PlannerVersion, "configuration": Configuration})
-            with self.lock:
+            self.WaitForCameraOpen()
+            with self.lock, self.MotionStartGate():
                 if Epoch != self.MotionEpoch or Bus is not self.bus or Configuration != self.ConfigurationKey():
                     raise ValueError("Motion cancelled: arm state or configuration changed during planning")
                 self.MotionPreflight()
@@ -4832,6 +5741,8 @@ class BridgeController:
 
         except Exception as Exc:
             return False, str(Exc)
+        finally:
+            self.MotionsStarting.discard(Starting)
 
     def ArmFrames(self, Angles: dict[str, float]) -> tuple[list[list[float]], list[list[float]] | None]:
         """Display-frame joints (as the app draws them) for IK angles, and the gripper link's 4x4 pose
@@ -4925,13 +5836,20 @@ class BridgeController:
         return Pose
 
     def state_snapshot(self) -> dict[str, Any]:
+        # Nothing under the motor lock touches the disk or serialises much: the files the state names are read (or found
+        # unchanged) before it, and the configuration key is written after it from what it was taken from (2026-10-19
+        # control stall: 1719 ms waiting on a snapshot that read WorkspaceFrame.json under the lock).
+        if not self.lock.HeldHere():
+            WorkspaceFrameFile.Refresh()
+            self.HandGuideCalibrationData()
         with self.lock:
             ik_angles = self._current_ik_angles()
             display_angles = self._display_angles(ik_angles)
             joint_positions = self._display_joints(
                 forward_joint_positions(self.arm_geometry, ik_angles)
             )
-            return {
+            Configuration = self.ConfigurationInputs()
+            State = {
                 "type": "state",
                 "servos": {
                     name: {
@@ -4997,7 +5915,7 @@ class BridgeController:
                 # Hold clears motion_fault: kind, reason, joint and the measured values.
                 "last_bridge_event": self.LastBridgeEvent,
                 "motion_epoch": self.MotionEpoch,
-                "configuration_key": self.ConfigurationKey(),
+                "configuration_key": None,  # written after the lock (ConfigurationText)
                 "torque": self.torque_enabled,
                 "arm_connected": self.arm_connected,
                 # {"at", "by"} after a Disconnect or Emergency Shutoff, until an explicit Connect: no page connects by
@@ -5022,6 +5940,8 @@ class BridgeController:
                     None if not self.last_refresh_s else round((time.monotonic() - self.last_refresh_s) * 1000.0)
                 ),
             }
+        State["configuration_key"] = ConfigurationText(Configuration)
+        return State
 
     def CaptureCadReference(self, Confirmed: bool) -> dict[str, Any]:
         with self.lock:
@@ -5101,12 +6021,17 @@ class BridgeController:
         law's 40 ms speed estimate at 100 Hz). Tests set their own."""
         return time.perf_counter()
 
-    def HandGuideCalibrationData(self) -> dict | None:
-        """The hand-guiding calibration (hand_guide_calibration.json), read again only when the file changed."""
+    def HandGuideCalibrationData(self, Cached: bool = False) -> dict | None:
+        """The hand-guiding calibration (hand_guide_calibration.json), read again only when the file changed (its mtime
+        or size). Cached: the last read, with no disk access (the state snapshot under the motor lock; it refreshes this
+        before taking the lock); only a first use reads the file."""
+        if Cached and self.HandGuideCalibrationCache is not None:
+            return self.HandGuideCalibrationCache[1]
         try:
-            Stamp = self.HandGuideCalibrationPath.stat().st_mtime
+            Stat = self.HandGuideCalibrationPath.stat()
+            Stamp = (Stat.st_mtime_ns, Stat.st_size)
         except OSError:
-            self.HandGuideCalibrationCache = None
+            self.HandGuideCalibrationCache = (None, None)  # no file: no calibration, until a stat finds one
             return None
         if self.HandGuideCalibrationCache is None or self.HandGuideCalibrationCache[0] != Stamp:
             self.HandGuideCalibrationCache = (Stamp, HandGuideCalibration.Load(self.HandGuideCalibrationPath))
@@ -5279,14 +6204,18 @@ class BridgeController:
     def HandGuideBegin(self, Session: HandGuideSession, Writes: dict[str, tuple[float, float]], Status: str) -> tuple[bool, str]:
         """Hand the joints of Session to the guide loop: cancel anything queued or planning, end the bridge's own hold
         corrections on them, write the first goals, start the loop. Called with the lock."""
-        self.MotionEpoch += 1
-        BumpPreemptGeneration()
-        self.CalibrationPlans.clear()
-        self.CalibrationPrepareToken = None
-        for Name in Session.Joints:
-            Servo = self.servos[Name]
-            Servo.Holding, Servo.homing, Servo.command_raw, Servo.command_speed = False, False, None, 0
-        self.HandGuide = Session
+        with self.MotionStartGate():  # no depth-camera open starts until self.HandGuide is set (CameraMustWait)
+            Refusal = self.MotionStartRefusal()
+            if Refusal:
+                return False, "Hand guiding not started: " + Refusal
+            self.MotionEpoch += 1
+            BumpPreemptGeneration()
+            self.CalibrationPlans.clear()
+            self.CalibrationPrepareToken = None
+            for Name in Session.Joints:
+                Servo = self.servos[Name]
+                Servo.Holding, Servo.homing, Servo.command_raw, Servo.command_speed = False, False, None, 0
+            self.HandGuide = Session
         self.HandGuideOwners[Session.Owner] = Session.Since
         self.HandGuideRestoreSpeedAt = 0.0
         self.HandGuideCalibrationResult = None if Session.Mode == "calibrate" else self.HandGuideCalibrationResult
@@ -5512,6 +6441,7 @@ class BridgeController:
             if Kind == "preloaded" and Session.Mode == "guide" and Session.Law.phase in ("preload", "ramp", "probe"):
                 Kind = "anchor"
             self.HandGuide = None
+            self.EndStatusStreaks()
             Session.Stop.set()
             # the owner's heartbeat entry goes with its session (a heartbeat after this adds it again until that page closes)
             self.HandGuideOwners.pop(Session.Owner, None)
@@ -5767,7 +6697,7 @@ class BridgeController:
     def HandGuideSnapshot(self) -> dict[str, Any]:
         """The state's hand_guide: whether a session runs and how, how the last one ended, and the calibration."""
         Session = self.HandGuide
-        Data = self.HandGuideCalibrationData()
+        Data = self.HandGuideCalibrationData(Cached=True)
         Out: dict[str, Any] = {"version": HandGuideVersion, "on": Session is not None and Session.Mode == "guide",
                                "calibrating": Session is not None and Session.Mode == "calibrate",
                                "last_exit": self.HandGuideLast, "calibrated": Data is not None,
@@ -6023,8 +6953,19 @@ control_loop = ControlLoop(controller, BRIDGE_FRAME_S)
 # The Orbbec depth camera belongs to the bridge (one process can stream it).
 # SO101_DEPTH_CAMERA=0 leaves it closed, e.g. for another program to use it.
 depth_camera = OrbbecCamera.DepthCamera()
-# No camera open attempt (1-2 s with the interpreter lock held) while the arm needs the control loop.
-depth_camera.Quiet = controller.MotionInProgress
+# No camera open attempt (1-7 s with the interpreter lock held) while the arm needs the control loop or a motion is
+# being checked and planned, and no motion starts while one runs (the open interlock: DepthCamera.OpenLock).
+depth_camera.Quiet = controller.CameraMustWait
+controller.Camera = depth_camera
+
+
+def StartupPending(Pool: Any, Camera: Any) -> str | None:
+    """What the running server is still starting (BridgeController.WarmUp): the route check workers (RouteCheckPool,
+    given up on after its StartSeconds) and the depth camera's first open; None once both ended, however they ended.
+    No Pool (a sandbox that starts no workers): none to wait for."""
+    Pending = [What for What, Done in (("route check workers", Pool is None or Pool.Started.is_set()),
+                                       ("the depth camera", Camera.FirstOpenDone.is_set())) if not Done]
+    return " and ".join(Pending) or None
 
 
 def RaiseProcessPriority() -> str:
@@ -6061,11 +7002,16 @@ async def _lifespan(_app: FastAPI):
     controller.DisconnectIntent = RemoteAccess.LoadIntent()
     controller.IntentSink = RemoteAccess.SaveIntent
     control_loop.StallDumps = StallDumpFile()
+    # WorkspaceFrame.json is read here, off the motor lock, whenever it changes (JsonFileCache).
+    threading.Thread(target=WatchFiles, name="so101-file-watch", daemon=True).start()
     control_loop.start()
     depth_camera.Start()
     # Planning's collision checks, side by side in their own processes (RouteCheckPool). Until they
     # answer, and if they never do, the bridge checks in process as before.
-    RouteChecks.Start()
+    Pool = RouteChecks.Start()
+    # No motion until the check workers have started and the camera's first open has ended (StartupPending): each
+    # freezes the control loop for seconds, which must not land inside a route. Commands are served only after this.
+    controller.WarmUp = lambda: StartupPending(Pool, depth_camera)
     try:
         yield
     finally:
@@ -6615,6 +7561,9 @@ def depthcam_check() -> dict[str, Any]:
     # A desk re-measured after a cart move is reported, never saved: only /locate writes the calibration.
     if CameraDrift.TakeRemeasuredReference(camera_check) is not None:
         camera_check["desk_saved"] = False
+    # Nor is a verified capture's basket rim recorded here (RobotReference.RecordRim): only /locate records it.
+    if RobotReference.TakeRimRecord(camera_check) is not None:
+        camera_check["rim_recorded"] = False
     return DepthGeometry.CheckPlane(pin["depth_mm"], intrinsics, model) | {
         "seq": pin["seq"], "camera_verdict": CameraDrift.Verdict(camera_check), "camera_check": camera_check}
 

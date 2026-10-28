@@ -1,5 +1,6 @@
 import { ReachAt, ReachPitches } from "./AiMeasurements";
 import type { ChainLeg } from "./AiChain";
+import { AppRunStepFact } from "./AppPlannedSteps";
 import type { SnapResult } from "./AiTargetSnap";
 import { mirrorDisplayPoint, rawToFraction, type IkAngleLimits, type Point3, type ServoName, type ServoState, type TargetPose } from "./robotModel";
 
@@ -109,8 +110,9 @@ export function ChainGripperStill(Samples: RawSample[], Now: number, SettledAt: 
 export type TaskMotionSnap = { Requested: Point3; RequestedPitch: number; Target: Point3; Pitch: number; DistanceCm: number; Reason: string | null };
 // Chain: a chained motion's run (AiChain.ts DescribeChainRun): which legs ran, in which order.
 // Planned: it was the app's own NEXT STEP, offered after the model did not copy it (PlannedStepNote).
+// AppRun: it was the app's own NEXT STEP, proposed without asking the model (lib/AppPlannedSteps.ts).
 export type TaskMotionFact = { Step: number; StartTip: Point3; EndTip: Point3; Target: Point3 | null; Servos: string | null; Snap?: TaskMotionSnap | null;
-  Chain?: string | null; Planned?: boolean };
+  Chain?: string | null; Planned?: boolean; AppRun?: boolean };
 
 const PointText = (P: Point3) => `X ${Cm(P.x)}, Y ${Cm(P.y)}, Z ${Cm(P.z)}`;
 const Wrist = (Pitch: number) => `wrist ${Cm(Pitch)}`;
@@ -138,6 +140,7 @@ export function DescribeMotionFact(Fact: TaskMotionFact) {
     + (Moved < 0.5 && !Fact.Servos ? ". That motion made no progress." : ".")
     + (Fact.Chain ? ` ${Fact.Chain}` : "")
     + (Fact.Planned ? ` ${PlannedStepFact}` : "")
+    + (Fact.AppRun ? ` ${AppRunStepFact}` : "")
     // The model otherwise believes it went where it asked, and asks again.
     + (Snap ? ` You asked for ${PointText(Snap.Requested)}, ${Wrist(Snap.RequestedPitch)}; that is not reachable${Snap.Reason ? ` (${Snap.Reason})` : ""},`
       + ` so the app sent the nearest possible target ${PointText(Snap.Target)}, ${Wrist(Snap.Pitch)} (${Cm(Snap.DistanceCm)} cm from your target).` : "");
@@ -229,6 +232,22 @@ export function NoOpFeedbackPrompt(Reason: string, NextStep: string | null = nul
 }
 
 /**
+ * A reply with task_status "continue" and no motion_proposal (2026-10-25 02:08: "I'll move a bit closer and lower
+ * to release the bottle into your palm", and no JSON): it is asked once, in the same check-in, for the motion it
+ * described. A second such reply ends the task (model_no_motion).
+ */
+export function NoMotionFeedbackPrompt() {
+  return [
+    "Your last reply said task_status \"continue\" but had no motion_proposal, so there is nothing to approve and the arm cannot move.",
+    "Give the motion_proposal JSON for the move you described, or reply task_status \"done\" or \"ask\" with motion_proposal null.",
+    "Return JSON only.",
+  ].join("\n");
+}
+
+/** The task's end when the model replied "continue" without a motion again after being asked for one. */
+export const NoMotionTwiceReason = "the AI twice replied \"continue\" without a motion: the app asked it again for the motion it described, and it still gave none.";
+
+/**
  * A no-op whose target the app snapped: the request itself is out of reach
  * and its nearest reachable point is where the arm already is, so asking for
  * it again cannot help. Snap in the AI's display frame.
@@ -280,6 +299,8 @@ export type TaskEndSource = "stop_task" | "stop_and_hold" | "emergency_stop" | "
   | "self_calibration" | "disconnect" | "manual_mode" | "block" | "new_task" | "arm_moving" | "timeout" | "error"
   | "camera_gate" | "bridge_refused" | "step_limit" | "motion_not_started" | "motion_timeout" | "app"
   | "model_done" | "model_ask" | "model_no_motion" | "context_reset" | "chain_interrupted"
+  // The app ended a grab-only task itself after its GRASP PLAN's lift with the jaws holding the object (lib/AppPlannedSteps.ts).
+  | "app_done"
   // Not ready for a task: the running bridge is not the code this page expects, or a joint reading is overridden.
   | "not_ready";
 

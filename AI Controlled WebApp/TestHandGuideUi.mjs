@@ -3,15 +3,15 @@
 // use's confirmation; the strip and the emergency stop that say the arm goes limp; Send and Home held while guiding; the
 // heartbeat; AI mode holding first. Leaves a screenshot in back end/TestArtifacts/HandGuideUi.png.
 import { chromium as Chromium } from "playwright";
-import { CadReadyMs, LaunchOptions, StartUiServer } from "./UiTestLib.mjs";
-import { readFileSync as ReadFile, mkdirSync as MakeDirectory } from "node:fs";
+import { CadReadyMs, LaunchOptions, StartUiServer, BackendPython } from "./UiTestLib.mjs";
+import { mkdirSync as MakeDirectory } from "node:fs";
 import { execFileSync as Execute } from "node:child_process";
 import { fileURLToPath as FilePath } from "node:url";
 import Path from "node:path";
 import Assert from "node:assert/strict";
 
 const Root = Path.dirname(FilePath(import.meta.url)), Backend = Path.resolve(Root, "../back end");
-const Python = ReadFile(Path.join(Root, "../.backend-python.txt"), "utf8").replace(/^﻿/, "").trim();
+const Python = BackendPython();
 const State = JSON.parse(Execute(Python, ["-c", "import json, bridge_server; print(json.dumps(bridge_server.BridgeController().state_snapshot()))"],
   { cwd: Backend, encoding: "utf8" }));
 Assert.equal(State.hand_guide_version, "guide-v1", "the bridge reports hand guiding");

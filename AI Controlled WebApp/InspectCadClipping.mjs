@@ -1,5 +1,5 @@
 import { chromium as Chromium } from "playwright";
-import { LaunchOptions, StartUiServer } from "./UiTestLib.mjs";
+import { LaunchOptions, StartUiServer, BackendPython } from "./UiTestLib.mjs";
 import { readFileSync as ReadFile, mkdirSync as MakeDirectory, writeFileSync as WriteFile } from "node:fs";
 import { execFileSync as Execute } from "node:child_process";
 import { fileURLToPath as FilePath } from "node:url";
@@ -8,7 +8,7 @@ import Assert from "node:assert/strict";
 
 const Root = Path.dirname(FilePath(import.meta.url));
 const Backend = Path.resolve(Root, "../back end");
-const Python = ReadFile(Path.join(Root, "../.backend-python.txt"), "utf8").trim();
+const Python = BackendPython();
 const State = JSON.parse(ReadFile(Path.join(Backend, "TestArtifacts/ClippingLiveState.json"), "utf8"));
 State.status = "CAD preview";
 const Output = Path.join(Backend, "TestArtifacts"); MakeDirectory(Output, { recursive: true });

@@ -225,7 +225,7 @@ class CartMoveTests(unittest.TestCase):
         # A calibration without a tape offset has nothing to tell a moved cart from a moved camera.
         Bare = {Key: Value for Key, Value in Self.Model.items() if Key != "marker_corners_gripper_cm"}
         Image, Depth = CartView(TDC.HeadCamera, Self.Moved, Self.Point)
-        Plain = CD.CheckDesk(Depth, Intrinsics, Bare, 9)
+        Plain = CD.CheckDesk(Depth, Intrinsics, Bare, 9, Self.Arm)  # the cells the arm covers left out, as CheckCapture does
         Result = CD.CheckCapture(Depth, Intrinsics, Bare, 9, Image, Self.Arm)
         # The robot's reading rides beside a desk result (RobotReference.ShadowKey) and decides nothing.
         Self.assertEqual({Key: Value for Key, Value in Result.items() if Key not in ("check_ms", RR.ShadowKey)},

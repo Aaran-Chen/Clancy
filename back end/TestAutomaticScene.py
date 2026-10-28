@@ -411,6 +411,24 @@ class NoDeskMeasureTests(unittest.TestCase):
         self.assertEqual((result["ok"], result["error_code"]), (False, "camera_moved"))
         self.assertNotIn("no_desk", result)
 
+    def test_an_assumed_camera_never_takes_the_task_reach_as_free(self):
+        # H2 is on (Aaran's decision, 2026-10-25) for a checked camera only: a capture the gripper tip could not check
+        # ("assumed", audit IH1) keeps free space to what the camera observed (README, HOW_IT_WORKS); 0d65c7e gave it
+        # the task's reach too.
+        self.assertTrue(SG.AssumeTaskReachFree)
+        clear = MagicMock(return_value=None)
+        for check, coverage in ((RobotVerified, "observed_and_task_reach"), (RobotAssumed, "observed_only")):
+            with self.subTest(check["robot_check"]):
+                result, _ = LocateChecked(self.depth, [CabinetCan], check, clear)
+                self.assertTrue(result["ok"], result)
+                scene = result["scene"]
+                self.assertEqual(scene["coverage"], coverage)
+                if coverage == "observed_only":
+                    self.assertNotIn("known_space", scene)
+                else:
+                    [reach] = scene["known_space"]
+                    self.assertEqual(reach["max"][2], round(scene["task_object"]["max"][2] + SG.TaskReachAboveCm, 3))
+
     def test_an_object_measured_twice_counts_once_in_the_tripwire(self):
         # The task object withheld from the samples' box and measured again from the task query's: one object.
         check = {**DeskVerified, "angle_deg": 0.0, "offset_cm": 0.0}
@@ -497,11 +515,12 @@ class SceneRobotTests(unittest.TestCase):
         self.assertLess(beyond(space), 0.45 * beyond(SG.ArmSpace(boxes, SG.ArmMarginCm)))
 
     def test_the_task_reach_is_known_only_when_switched_on(self):
-        # H2 is a policy for Aaran to decide (NoDeskDesign.md open question 3): off, the scene is as before.
+        # H2 (NoDeskDesign.md open question 3): Aaran chose on (2026-10-25); off, the scene is as before.
         depth = T.TDC.RenderDepth(T.Camera, NoDeskWorkspace([CabinetCan]), FloorZ=T.TDC.RoomFloorZ)
         measured = {**MeasuredNoDesk(depth, CabinetCan), "label": "can"}
-        self.assertFalse(SG.AssumeTaskReachFree)
-        plain = SG.Build(depth, T.TDC.Intrinsics, T.Camera, measured, measured["support_geometry"])
+        self.assertTrue(SG.AssumeTaskReachFree)
+        with patch.object(SG, "AssumeTaskReachFree", False):
+            plain = SG.Build(depth, T.TDC.Intrinsics, T.Camera, measured, measured["support_geometry"])
         self.assertNotIn("known_space", plain)
         self.assertEqual(plain["coverage"], "observed_only")
         with patch.object(SG, "AssumeTaskReachFree", True):
@@ -603,7 +622,8 @@ class SceneSupportTests(unittest.TestCase):
         board = (np.array([-27.0, 44.0, CabinetTop]), np.array([-11.0, 44.75, CabinetTop + 16.0]))
         depth = T.TDC.RenderDepth(T.Camera, NoDeskWorkspace([CabinetCan, board]), FloorZ=T.TDC.RoomFloorZ)
         measured = {**MeasuredNoDesk(depth, CabinetCan), "label": "can"}
-        plain = SG.Build(depth, T.TDC.Intrinsics, T.Camera, measured, measured["support_geometry"])
+        with patch.object(SG, "AssumeTaskReachFree", False):
+            plain = SG.Build(depth, T.TDC.Intrinsics, T.Camera, measured, measured["support_geometry"])
         self.assertFalse(any(box["label"].startswith("hidden") for box in plain["obstacles"]))
         with patch.object(SG, "AssumeTaskReachFree", True):
             reached = SG.Build(depth, T.TDC.Intrinsics, T.Camera, measured, measured["support_geometry"])
@@ -617,6 +637,115 @@ class SceneSupportTests(unittest.TestCase):
             self.assertTrue(np.all(low >= np.array(reach["min"]) - 1.0) and np.all(high <= np.array(reach["max"]) + 1.0), box)
             self.assertFalse(np.all(low < np.array(task["max"])) and np.all(high > np.array(task["min"])), ("inside the can's envelope", box))
             self.assertGreaterEqual(low[2], reached["support"]["TopZCm"] - 1.0)
+
+
+class NoDeskSupportSidesTests(unittest.TestCase):
+    """With no calibrated desk in view a level patch beside enough of the object's sides holds it (DepthGeometry
+    SupportSides): what stands against the object no longer withholds it (the pill bottle on the bookshelf cabinet of
+    2026-10-25, TestShelfCapture). Floating, held up by the arm, or on a slope it is still withheld."""
+
+    def test_books_against_its_back_and_side_do_not_withhold_it(self):
+        # Books standing against the can's back and its left side, from the cabinet top up: the cabinet top lies around
+        # it only in front and on its right. The can's outline (MeasureBox Only, as the single call's) keeps the books'
+        # faces out of its measurement, as the model's outline does: a box alone takes in the books touching it.
+        books = [(np.array([-30.0, 42.0, CabinetTop]), np.array([-8.0, 50.0, CabinetTop + 20.0])),
+                 (np.array([-30.0, 30.0, CabinetTop]), np.array([-22.0, 42.0, CabinetTop + 20.0]))]
+        depth = T.TDC.RenderDepth(T.Camera, NoDeskWorkspace([CabinetCan, *books]), FloorZ=T.TDC.RoomFloorZ)
+        alone = T.TDC.RenderDepth(T.Camera, NoDeskWorkspace([CabinetCan]), FloorZ=T.TDC.RoomFloorZ)
+        outline = (depth == alone) & (alone != T.TDC.RenderDepth(T.Camera, NoDeskWorkspace(), FloorZ=T.TDC.RoomFloorZ)) & (depth > 0)
+        surfaces = DG.WorkspaceSurfaces(None, T.TableZ, Automatic=True, Desk=False)
+        box = T.TDC.CaptureBox(T.Camera, *CabinetCan)
+        Measure = lambda **extra: DG.MeasureBox(depth, box, T.TDC.Intrinsics, T.Camera, T.TableZ, True, Surfaces=extra.pop("surfaces", surfaces),
+                                                Only=outline, **extra)
+        measured = {**Measure(), "label": "can"}
+        self.assertTrue(measured["ok"], measured)
+        self.assertEqual((measured["support_branch"], measured["automatic_surface"]), ("surface", True))
+        self.assertAlmostEqual(measured["z"], CabinetTop, delta=0.3)
+        self.assertAlmostEqual(measured["height_cm"], 8.0, delta=0.5)
+        self.assertLess(np.hypot(measured["x"] + 19.0, measured["y"] - 39.0), 1.0, measured)
+        support = measured["support_geometry"]
+        sides = support["Evidence"]["sides"]
+        self.assertGreaterEqual(len(sides), DG.SupportMinSides)
+        self.assertNotIn("-x", sides)
+        self.assertNotIn("+y", sides)
+        # The support's extent takes in the footprint it holds.
+        self.assertLessEqual(support["YRangeCm"][0], measured["y"] - measured["size_cm"][1] / 2 + 0.01)
+        self.assertGreaterEqual(support["YRangeCm"][1], measured["y"] + measured["size_cm"][1] / 2 - 0.01)
+        # Only the sides rule admits it: around all four sides it was withheld, as at a desk.
+        with patch.object(DG, "SupportMinSides", 5):
+            self.assertEqual(Measure()["error"], DG.NoDeskSupportError)
+        # At a calibrated desk the rule is as before (the patch must lie around the footprint).
+        self.assertFalse(Measure(surfaces=DG.WorkspaceSurfaces(None, T.TableZ, Automatic=True, Desk=True)).get("automatic_surface", False))
+        # The books stay solids: against the can (its contact) and in the scene's obstacles.
+        scene = SG.Build(depth, T.TDC.Intrinsics, T.Camera, measured, support)
+        self.assertIsNotNone(scene["task_contact"])
+        self.assertGreaterEqual(scene["task_contact"]["points"], SG.TouchMinPoints)
+        tall = [box for box in scene["obstacles"] if box["max"][2] > CabinetTop + 12.0]
+        self.assertTrue(tall, "the books above the can are obstacles")
+
+    def test_a_floating_object_is_withheld(self):
+        # The can 5 cm above the cabinet top, nothing under it: the cabinet top lies all around, but the can does not reach it.
+        floating = (CabinetCan[0] + [0, 0, 5.0], CabinetCan[1] + [0, 0, 5.0])
+        depth = T.TDC.RenderDepth(T.Camera, NoDeskWorkspace([floating]), FloorZ=T.TDC.RoomFloorZ)
+        measured = MeasuredNoDesk(depth, floating)
+        self.assertFalse(measured["ok"], measured)
+        self.assertEqual(measured["error"], DG.NoDeskSupportError)
+
+    def test_an_object_held_up_by_the_arm_is_withheld(self):
+        # The can resting on a block the arm's mask removes (the gripper under it), 5 cm above the cabinet top: the arm
+        # is no support, and the cabinet top below does not hold it.
+        lifted = (CabinetCan[0] + [0, 0, 5.0], CabinetCan[1] + [0, 0, 5.0])
+        arm = (np.array([-25.0, 33.0, CabinetTop + 2.0]), np.array([-13.0, 45.0, CabinetTop + 5.0]))
+        depth = T.TDC.RenderDepth(T.Camera, NoDeskWorkspace([lifted, arm]), FloorZ=T.TDC.RoomFloorZ)
+        low, high = arm[0] - 0.5, arm[1] + 0.5
+        exclude = lambda points: np.all((points >= low) & (points <= high), axis=1)
+        surfaces = DG.WorkspaceSurfaces(None, T.TableZ, Automatic=True, Desk=False)
+        measured = DG.MeasureBox(depth, T.TDC.CaptureBox(T.Camera, *lifted), T.TDC.Intrinsics, T.Camera, T.TableZ, True,
+                                 Surfaces=surfaces, Exclude=exclude)
+        self.assertFalse(measured["ok"], measured)
+        self.assertEqual(measured["error"], DG.NoDeskSupportError)
+        # Unmasked, the block is a level top under the can, and the can is measured on it (the mask is what refuses it).
+        unmasked = DG.MeasureBox(depth, T.TDC.CaptureBox(T.Camera, *lifted), T.TDC.Intrinsics, T.Camera, T.TableZ, True, Surfaces=surfaces)
+        self.assertTrue(unmasked["ok"], unmasked)
+        self.assertAlmostEqual(unmasked["z"], CabinetTop + 5.0, delta=0.3)
+
+    def test_an_object_whose_base_a_box_in_front_hides_is_not_measured_on_the_box(self):
+        # A box 4 cm tall against the can's front, wider than it: the can's lower half is hidden, so its base height
+        # cannot be told. The box's top lies only in front of it: it is never the can's support.
+        for gap in (0.0, 0.5):
+            with self.subTest(gap=gap):
+                front = (np.array([-25.0, 30.0, CabinetTop]), np.array([-13.0, 36.0 - gap, CabinetTop + 4.0]))
+                depth = T.TDC.RenderDepth(T.Camera, NoDeskWorkspace([CabinetCan, front]), FloorZ=T.TDC.RoomFloorZ)
+                measured = MeasuredNoDesk(depth, CabinetCan)
+                self.assertFalse(measured["ok"] and abs(measured["z"] - CabinetTop) > 0.5, measured)
+
+    def test_an_object_on_a_slope_is_withheld(self):
+        # The can on a top sloping 20 deg, nothing level around it.
+        slope, pivot = float(np.tan(np.radians(20.0))), 39.0
+        can = (np.array([-22.0, 36.0, CabinetTop + slope * 3.0]), np.array([-16.0, 42.0, CabinetTop + slope * 3.0 + 8.0]))
+        body = (np.array([-40.0, 28.0, T.TDC.RoomFloorZ]), np.array([-3.0, 62.0, CabinetTop - slope * 11 - 0.2]))
+        depth = RenderTilted(T.Camera, [T.TDC.Workspace()[1], body, can], CabinetTop, slope, pivot)
+        measured = MeasuredNoDesk(depth, can)
+        self.assertFalse(measured["ok"], measured)
+        self.assertFalse(measured.get("automatic_surface", False), measured)
+        self.assertNotEqual(measured["support_branch"], "surface", measured)
+
+    def test_the_sides_themselves(self):
+        rng = np.random.default_rng(3)
+        level = lambda x0, x1, y0, y1, n=3000: np.column_stack([rng.uniform(x0, x1, n), rng.uniform(y0, y1, n), np.full(n, 4.0)])
+        centre, half = np.array([0.0, 40.0]), np.array([2.0, 2.0])
+        self.assertEqual(DG.SupportSides(np.vstack([level(-6, 6, 34, 38), level(2, 6, 38, 42)]), centre, half), ["+x", "-y"])
+        self.assertEqual(DG.SupportSides(level(-6, 6, 34, 46), centre, half), ["-x", "+x", "-y", "+y"])
+        # A few points at a corner are no side; nor a band covering under half the side's length.
+        self.assertEqual(DG.SupportSides(level(2.2, 3.0, 37.2, 38.0, 30), centre, half), [])
+        self.assertEqual(DG.SupportSides(level(2.0, 4.0, 38.0, 39.5, 400), centre, half), [])
+        self.assertEqual(DG.SupportSides(level(4.5, 6.0, 38.0, 42.0, 400), centre, half), [], "more than 2 cm off its side")
+        # The line a wall (or the object's own side) cuts at the surface's height is no area; the box's own points count
+        # only clear of the footprint.
+        self.assertEqual(DG.SupportSides(level(3.0, 3.2, 38.0, 42.0, 400), centre, half), [])
+        edge = level(1.6, 2.4, 38.0, 42.0, 400)
+        self.assertEqual(DG.SupportSides(np.empty((0, 3)), centre, half, Inside=edge), [])
+        self.assertEqual(DG.SupportSides(np.empty((0, 3)), centre, half, Inside=level(2.0, 4.0, 38.0, 42.0, 800)), ["+x"])
 
 
 # The recorded cabinet frame of 2026-10-06 15:01:01Z (RecordedCaptures: not on disk, the tests fail, RECORDING MISSING),
@@ -760,8 +889,11 @@ class CabinetSceneTests(unittest.TestCase):
         recorded = CD.CheckCapture(self.depth, self.camera, self.model, 516698, self.image, moving)
         self.assertEqual((recorded["ok"], recorded["robot_check"], recorded["rim_check"]), (True, "assumed", "ok"), recorded)
         depth, image = TurnedFrame(self.depth, self.image, self.camera, cv2.Rodrigues(np.array([math.radians(2.0), 0.0, 0.0]))[0])
+        # Since 2026-10-25 the rim decides at the camera gate itself (RobotReference.Check: either witness off blocks), so the
+        # turned frame never reaches the model; it used to pass as assumed and trip the scene tripwire after the model call.
         turned = CD.CheckCapture(depth, self.camera, self.model, 516698, image, moving)
-        self.assertEqual((turned["ok"], turned["robot_check"], turned["rim_check"]), (True, "assumed", "moved"), turned)
+        self.assertEqual((turned["ok"], turned["error_code"], turned["robot_check"], turned["rim_check"]), (False, "camera_moved", "moved", "moved"), turned)
+        self.assertIn("basket's front rim", turned["error"])
         saved = self.check
         try:
             self.check = recorded
@@ -770,6 +902,10 @@ class CabinetSceneTests(unittest.TestCase):
             self.assertIn("scene", result)
             self.assertEqual([item["scene_checked"] for item in result["objects"]], [False])
             self.check = turned
+            gated = self.locate(depth)
+            self.assertEqual((gated["ok"], gated["error_code"]), (False, "camera_moved"), gated)
+            # The tripwire behind it still holds a capture that reads so and passed the gate (an older gate's result).
+            self.check = {**{Key: Value for Key, Value in turned.items() if Key not in ("error_code", "error")}, "ok": True, "robot_check": "assumed"}
             blocked = self.locate(depth)
             self.assertEqual((blocked["ok"], blocked["error_code"]), (False, "camera_moved"), blocked)
             self.assertIn("basket rim", blocked["camera_check"]["reason"])

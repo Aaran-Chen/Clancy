@@ -65,6 +65,19 @@ function Answers(Port) {
 }
 
 /**
+ * The Python that runs the back end: the one run-app.ps1 found and noted in the repo's .backend-python.txt, else
+ * SO101_PYTHON, else python on the PATH. The note is git-ignored and machine-only, so a fresh clone or a new worktree
+ * has none (TestDeclaredSurfaces hit ENOENT in the 2026-10-18 public-prep run).
+ */
+export function BackendPython() {
+  try {
+    const Noted = Fs.readFileSync(Path.join(AppDir, "..", ".backend-python.txt"), "utf8").replace(/^﻿/, "").trim();
+    if (Noted) return Noted;
+  } catch { /* No note on this checkout. */ }
+  return process.env.SO101_PYTHON || "python";
+}
+
+/**
  * The recorded captures a replay reads, found as back end/RecordedCaptures.py finds them: SO101_REAL_CAPTURES (or
  * SO101_REPLAY_CAPTURES), else this checkout's back end/captures, else, in a git worktree, the main checkout's.
  */

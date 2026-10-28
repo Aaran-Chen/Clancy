@@ -117,7 +117,7 @@ Test('an unverified or unchecked camera stops tasks that act on objects, not a d
   const NotVerified = Api.ReadLocateResponse({ ok: false, error_code: 'camera_not_verified', error: 'Object positions are blocked: the camera is not calibrated.' });
   const CheckFailed = Api.ReadLocateResponse({ ok: false, error_code: 'camera_check_failed', error: 'The desk is not visible in depth.' });
   Assert.match(Api.CameraGateFailure(NotVerified, true).Title, /no camera check reference/);
-  Assert.match(Api.CameraGateFailure(CheckFailed, true).Title, /could not be checked/);
+  Assert.equal(Api.CameraGateFailure(CheckFailed, true).Title, 'The desk is not visible in depth.', "the bridge's sentence");
   Assert.equal(Api.CameraGateFailure(NotVerified, false), null, '"Open the gripper" still runs while the calibration is cleared');
   Assert.equal(Api.CameraGateFailure(CheckFailed, false), null);
   Assert.match(Api.MeasuredObjectsSummary(NotVerified), /NO MEASURED OBJECT POSITIONS: Object positions are blocked/);
@@ -125,6 +125,24 @@ Test('an unverified or unchecked camera stops tasks that act on objects, not a d
   const Webcam = Api.CameraGateFailure(NotVerified, true, 'webcam');
   Assert.equal(Webcam.Code, 'camera_not_verified');
   Assert.match(Webcam.Title, /^Tasks that act on objects need the depth camera/);
+});
+
+Test('a desk capture whose camera check failed is titled by the bridge, never "the desk was not measured" when it was (audit 2 M6)', () => {
+  // back end/CameraDrift.py _CheckDesk: the desk measured, but too little of it agrees with one camera pose.
+  const Differs = 'The camera position could not be checked: much of the desk looks different from calibration. Clear the desk, or lock the camera head and recalibrate.';
+  const Reason = 'only 41% of the calibrated desk in view agrees with one camera pose (need 60%)';
+  const Measured = Api.ReadLocateResponse({ ok: false, error_code: 'camera_check_failed', error: Differs,
+    camera_check: Check({ ok: false, angle_deg: 0.4, offset_cm: 0.1, error_code: 'camera_check_failed', error: Differs, reason: Reason }) });
+  const Gate = Api.CameraGateFailure(Measured, true);
+  Assert.equal(Gate.Code, 'camera_check_failed');
+  Assert.equal(Gate.Title, Differs);
+  Assert.equal(Gate.Detail, Reason);
+  // The cart-move path's: the desk moved against the arm and could not be measured again.
+  const Remeasure = 'The desk moved against the arm since calibration (was the cart moved?) and the camera is still where it was on the arm, but too little of the desk is in view to measure it again. Clear the view of the desk, then send again.';
+  Assert.equal(Api.CameraGateFailure(Api.ReadLocateResponse({ ok: false, error_code: 'camera_check_failed', error: Remeasure }), true).Title, Remeasure);
+  // A bridge without the sentence: the app's own.
+  Assert.match(Api.CameraGateFailure({ objects: [], rmsCm: null, error: null, errorCode: 'camera_check_failed', cameraCheck: null }, true).Title, /^The camera could not be checked against its calibration/);
+  Assert.equal(Api.CameraGateFailure(Measured, false), null, 'a description or a jog still goes on');
 });
 
 Test('a cart rolled against the desk: an unjudged tape stops object tasks without recalibration wording, a re-measured desk never blocks', () => {

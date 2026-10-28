@@ -12,7 +12,7 @@ import { RecordedCaptures } from './UiTestLib.mjs';
 // Every recorded /locate reply of 2026-10-03, 10-04 and 10-06 (grounding.jsonl), through the camera gate as
 // 74097be had it and as it is now: the same Code, Title and Detail, and the same desk note. The no-desk check
 // (back end/RobotReference.py) adds fields and a note for replies that carry robot_check, and none of these
-// does. The recordings are found as back end/RecordedCaptures.py finds them (SO101_REAL_CAPTURES; in a git worktree
+// does. A camera_check_failed is titled by the bridge's sentence now (audit 2 M6). The recordings are found as back end/RecordedCaptures.py finds them (SO101_REAL_CAPTURES; in a git worktree
 // the main checkout's); without them, or without git, the test fails (RECORDING MISSING): it used to skip.
 const Root = Path.dirname(FilePath(import.meta.url));
 const Repo = Path.join(Root, '..');
@@ -75,7 +75,10 @@ Test('every recorded camera check reaches the same gate and note as before the n
       const Before = Old.ReadLocateResponse(Reply), After = New.ReadLocateResponse(Reply);
       for (const Needs of [true, false]) {
         for (const Source of ['depth', 'webcam']) {
-          Assert.deepEqual(New.CameraGateFailure(After, Needs, Source), Old.CameraGateFailure(Before, Needs, Source), `${Record.time} needs=${Needs} ${Source}`);
+          const Expected = Old.CameraGateFailure(Before, Needs, Source);
+          // Since audit 2 M6 a failed check is titled by the bridge's sentence (74097be said "the desk was not measured" for all).
+          if (Expected?.Code === 'camera_check_failed' && After.error) Object.assign(Expected, { Title: After.error, Detail: After.cameraCheck?.Reason ?? '' });
+          Assert.deepEqual(New.CameraGateFailure(After, Needs, Source), Expected, `${Record.time} needs=${Needs} ${Source}`);
         }
       }
       Assert.equal(New.DeskRemeasuredNote(After?.cameraCheck ?? null), Old.DeskRemeasuredNote(Before?.cameraCheck ?? null));

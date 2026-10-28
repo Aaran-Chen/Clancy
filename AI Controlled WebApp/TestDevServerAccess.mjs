@@ -15,14 +15,14 @@ import Fs from "node:fs";
 import Http from "node:http";
 import Os from "node:os";
 import Path from "node:path";
-import { ListenOnUiPort } from "./UiTestLib.mjs";
+import { ListenOnUiPort, BackendPython } from "./UiTestLib.mjs";
 
 const App = import.meta.dirname, Backend = Path.resolve(App, "../back end");
 const Scratch = Fs.mkdtempSync(Path.join(Os.tmpdir(), "so101-dev-access-"));
 Object.assign(process.env, { SO101_REMOTE_PASSWORD_FILE: Path.join(Scratch, "RemotePassword.json"), SO101_RECORDER: "0",
   SO101_OLLAMA_AUTOSTART: "0", OLLAMA_BASE_URL: "http://127.0.0.1:9", DEPTH_BASE_URL: "http://127.0.0.1:9",
   SO101_CAPTURES_ROOT: Path.join(Scratch, "captures") });
-const Python = Fs.readFileSync(Path.join(App, "../.backend-python.txt"), "utf8").replace(/^﻿/, "").trim();
+const Python = BackendPython();
 const Load = async File => {
   const Bundle = await Build({ entryPoints: [File], bundle: true, write: false, platform: "node", format: "esm" });
   return import(`data:text/javascript;base64,${Buffer.from(Bundle.outputFiles[0].text).toString("base64")}`);

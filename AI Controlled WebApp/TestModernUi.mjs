@@ -1,6 +1,6 @@
 import { chromium } from "playwright";
-import { CadReadyMs, LaunchOptions, StartUiServer } from "./UiTestLib.mjs";
-import { readFileSync, mkdirSync } from "node:fs";
+import { CadReadyMs, LaunchOptions, StartUiServer, BackendPython } from "./UiTestLib.mjs";
+import { mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 // sends a command to the arm. It serves this checkout on its own port (UiTestLib.mjs).
 const root = path.dirname(fileURLToPath(import.meta.url));
 const backend = path.resolve(root, "../back end");
-const python = readFileSync(path.join(root, "../.backend-python.txt"), "utf8").trim();
+const python = BackendPython();
 const state = JSON.parse(execFileSync(python, ["-c", "import json, bridge_server; print(json.dumps(bridge_server.BridgeController().state_snapshot()))"], { cwd: backend, encoding: "utf8" }));
 const output = path.join(backend, "TestArtifacts", "ModernUi");
 mkdirSync(output, { recursive: true });

@@ -173,14 +173,28 @@ class DepthCamera:
         Self.IntrinsicsValue: dict[str, Any] | None = None
         Self.Error: str | None = None
         Self.Times: collections.deque[float] = collections.deque(maxlen=30)
-        # True while an open must wait (the bridge: the arm is moving, calibrating or hand guiding).
+        # True while an open must wait (the bridge: the arm is moving, calibrating or hand guiding, or a motion is being
+        # checked and planned). It must not wait for anything: it is called holding OpenLock.
         Self.Quiet: Callable[[], bool] = lambda: False
         Self.FailedOpens = 0
+        # The open interlock: an open and an arm motion never overlap. Quiet() is read and Opening set under OpenLock,
+        # and the bridge holds it from a motion's last check until the motion counts as moving (Quiet() true) and
+        # refuses while Opening: a motion cannot start between the open's check and the open (ad5a7a8 left that gap:
+        # an open begun just before a route froze the loop under it). Opening covers the whole open, the SDK's
+        # Context, device query and pipeline start, which hold the interpreter lock for 1-7 s (2026-10-25 stalls).
+        Self.OpenLock = threading.Lock()
+        Self.Opening = False
+        # Set once the first open ended, however it ended, or at once when the camera is off: the bridge's startup
+        # warm-up waits for it (no motion before), since that first open is the longest freeze (6-7 s, 2026-10-25).
+        Self.FirstOpenDone = threading.Event()
 
     # -- lifecycle ---------------------------------------------------------
 
     def Start(Self) -> None:
-        if os.environ.get("SO101_DEPTH_CAMERA", "1") == "0" or Self.Running:
+        if os.environ.get("SO101_DEPTH_CAMERA", "1") == "0":
+            Self.FirstOpenDone.set()
+            return
+        if Self.Running:
             return
         Self.Running = True
         Self.Thread = threading.Thread(target=Self._Run, name="DepthCamera", daemon=True)
@@ -193,6 +207,7 @@ class DepthCamera:
         if Self.Thread is not None:
             Self.Thread.join(timeout=3.0)
         Self.Thread = None
+        Self.FirstOpenDone.set()
 
     def _IsQuiet(Self) -> bool:
         try:
@@ -200,16 +215,30 @@ class DepthCamera:
         except Exception:
             return False
 
+    def _BeginOpen(Self) -> bool:
+        """Whether an open may start now; if so it counts as Opening from here (checked and set under OpenLock)."""
+        with Self.OpenLock:
+            if Self._IsQuiet():
+                return False
+            Self.Opening = True
+            return True
+
     def _Run(Self) -> None:
         while Self.Running:
-            while Self.Running and Self._IsQuiet():
+            while Self.Running and not Self._BeginOpen():
                 Self._Sleep(QuietPollS)
             if not Self.Running:
+                Self.Opening = False
                 break
             try:
                 Source = Self.Opener()
             except Exception as Exc:
+                Source = None
                 Self.Error = f"{type(Exc).__name__}: {Exc}"
+            finally:
+                Self.Opening = False
+                Self.FirstOpenDone.set()
+            if Source is None:
                 Self.FailedOpens += 1
                 Self._Sleep(min(ReconnectMaxDelayS, ReconnectDelayS * 2 ** (Self.FailedOpens - 1)))
                 continue

@@ -1,11 +1,27 @@
 """CAD triangle/box contact and solid containment, accelerated by a static BVH."""
 import json as Json
+import struct
 from pathlib import Path
 import numpy as Np
 
 Data = Json.loads((Path(__file__).resolve().parent / "BasketSurface.json").read_text())
 Epsilon = 1e-7  # Numerical contact tolerance in cm, not a clearance zone.
 RayDirection = Np.array([1., 0.3713906763541037, 0.5291502622129182])
+# Answers Surface.Overlaps keeps, each about 0.25 kB (a planning process holds two surfaces); past this many it
+# starts again.
+MemoLimit = 30000
+_Shapes = ((3,), (3, 3), (3,))
+
+
+def _Key(Center, Rotation, Half, Padding):
+    """Surface.Overlaps' arguments as one key, or None (not kept) for any but float64 arrays of the planner's shapes and
+    a float padding: equal keys only for the very same numbers."""
+    if not isinstance(Padding, float):  # NumPy's float64 is a float too.
+        return None
+    for Value, Shape in zip((Center, Rotation, Half), _Shapes):
+        if not isinstance(Value, Np.ndarray) or Value.dtype != Np.float64 or Value.shape != Shape:
+            return None
+    return Center.tobytes() + Rotation.tobytes() + Half.tobytes() + struct.pack("<d", Padding)
 
 
 class Surface:
@@ -34,6 +50,7 @@ class Surface:
         Self.Determinant = Np.einsum("ij,ij->i", Self.First, Self.RayCross)
         Self.RayValid = Np.abs(Self.Determinant) > 1e-12
         Self.RayInverse = Np.divide(1., Self.Determinant, out=Np.zeros_like(Self.Determinant), where=Self.RayValid)
+        Self.Memo = {}
 
     def Candidates(Self, Low, High):
         Pending, Result = [0], []
@@ -153,6 +170,23 @@ class Surface:
         return False
 
     def Overlaps(Self, Center, Rotation, Half, Padding=0.0):
+        """Whether the box (world Center, Rotation, Half sizes, grown by Padding) touches or is inside the surface.
+
+        The surface never changes, so an answer is kept for the exact same arguments (_Key: the same numbers): a
+        route plan asks the same box at the same pose again and again (28% of the calls of the 2026-10-26 02:05
+        Home), and the answer is the one the check (Check) gave the first time."""
+        Key = _Key(Center, Rotation, Half, Padding)
+        if Key is None:
+            return Self.Check(Center, Rotation, Half, Padding)
+        Memo = Self.Memo
+        Answer = Memo.get(Key)
+        if Answer is None:
+            Answer = Memo[Key] = Self.Check(Center, Rotation, Half, Padding)
+            if len(Memo) > MemoLimit:
+                Self.Memo = {}
+        return Answer
+
+    def Check(Self, Center, Rotation, Half, Padding=0.0):
         # A local cube inflated by r contains the full radius-r motion envelope.
         Expanded = Half + Padding + Epsilon
         Extent = Np.abs(Rotation) @ Expanded

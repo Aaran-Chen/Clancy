@@ -43,8 +43,8 @@ ArmMarginCm = 2.0
 # with none). The space cut out beyond it is unknown, not free: the gripper is not certified into it.
 KnownArmMarginCm = 0.5
 _Robot: dict[str, Any] = {}
-# Unobserved space around the task object (H2: a policy, NoDeskDesign.md open question 3, for Aaran to decide;
-# off). A grasp's gripper comes within a centimetre of its object and of the surface under it, where no 2 cm cube
+# Unobserved space around the task object (H2: a policy, NoDeskDesign.md open question 3; Aaran chose on,
+# 2026-10-25, so shelf grasps are not refused for space the camera cannot see beside the object). A grasp's gripper comes within a centimetre of its object and of the surface under it, where no 2 cm cube
 # is ever certified free (the depth there is the object or the surface itself), and its moving jaw closes behind
 # the object, which hides that space from the camera: at the cabinet of 2026-10-06 15:01 the gripper boxes of the
 # hover, the descent and the lift were 90% unobserved, and every grasp was refused. With AssumeTaskReachFree the
@@ -54,7 +54,7 @@ _Robot: dict[str, Any] = {}
 # them down to the support (HiddenUnder), so only what the camera could not see and nothing it saw stands over is
 # taken to be empty. A near-level wrist (the bottle 39-42 cm out) lays the gripper's body 8 cm behind the object: 6 cm
 # left the descent unobserved (the bottle moved 3 cm clear of the books). Everywhere else free space must be observed.
-AssumeTaskReachFree = False
+AssumeTaskReachFree = True
 TaskReachCm = 8.0
 TaskReachAboveCm = 12.0
 TaskReachBelowCm = 2.0
@@ -286,7 +286,7 @@ def _ProjectedBounds(Camera, Intrinsics):
 
 
 def Build(DepthMm, Intrinsics, Model, Object: dict[str, Any], Support: dict[str, Any],
-          Exclude=None, CaptureSeq=None, TaskEnvelope=None, RemoveTarget=True, ArmBoxes=None) -> dict[str, Any]:
+          Exclude=None, CaptureSeq=None, TaskEnvelope=None, RemoveTarget=True, ArmBoxes=None, Assumed=False) -> dict[str, Any]:
     """A candidate scene, not a motion authorization; the registry stamps it.
 
     The task object is deliberately separate from obstacles for grasp contact.
@@ -294,7 +294,8 @@ def Build(DepthMm, Intrinsics, Model, Object: dict[str, Any], Support: dict[str,
     Other observed objects, shelf sides, undersides and back walls remain solid.
     The robot's own points are left out: the arm in ArmBoxes (CaptureArmPose
     "link_boxes", where it stood for this capture), and the cart, basket and mast
-    the collision model knows (RobotCells).
+    the collision model knows (RobotCells). Assumed: the capture's camera was not
+    checked (robot_check "assumed", audit IH1), so it gets no task reach.
     """
     Target = TaskEnvelope if TaskEnvelope is not None else TaskBounds(Object)
     if Target is None:
@@ -398,7 +399,8 @@ def Build(DepthMm, Intrinsics, Model, Object: dict[str, Any], Support: dict[str,
     # KnownArmMarginCm around its boxes is known: the cut-out's 2 cm hid real boards beside the gripper and declared
     # them free.
     Known = ArmSpace(ArmBoxes)
-    if AssumeTaskReachFree:
+    # Never for a capture whose camera nothing checked ("assumed", audit IH1): its free space stays what was observed.
+    if AssumeTaskReachFree and not Assumed:
         Reach = TaskReach(Target, Support)
         # What stands there stands on the support: the unobserved space under what the camera saw is solid too.
         for Box in HiddenUnder(Environment[~IsSupport], Free, Reach, Target, Support["TopZCm"]):

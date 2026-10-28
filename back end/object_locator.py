@@ -35,6 +35,8 @@ task's object.
 from __future__ import annotations
 
 import base64
+import contextvars
+import functools
 import json
 import math
 import re
@@ -54,6 +56,7 @@ import calibration
 import CameraDrift
 import DeclaredSurfaces
 import DepthGeometry
+import RobotReference
 import SessionLog
 import SceneGeometry
 try:
@@ -66,6 +69,42 @@ except ModuleNotFoundError as Exc:
 # Same override the web app's Vite proxy honours.
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 LOCATE_TIMEOUT_S = 180
+# One deadline for a whole /locate, shared by its model calls and its depth work: the app stops waiting at
+# LocateTimeoutMs (60 s, lib/AiTaskLoop.ts), and the bridge does not see it go (a plain FastAPI handler is not
+# cancelled), so a locate it abandoned kept Ollama busy for up to LOCATE_TIMEOUT_S a call (audit 2 L10). Past it the
+# locate ends with error_code "locate_timeout"; the model call it cuts short closes its connection, which ends Ollama's
+# generation, and the scene it would have registered stays revoked.
+LOCATE_DEADLINE_S = 60.0
+_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar("LocateDeadline", default=None)
+
+
+def _Late() -> bool:
+    """The running locate is past its deadline (LOCATE_DEADLINE_S)."""
+    Deadline = _DEADLINE.get()
+    return Deadline is not None and time.perf_counter() >= Deadline
+
+
+def _ModelTimeout() -> float:
+    """A model call's timeout: LOCATE_TIMEOUT_S, within a locate cut to what is left of its deadline. TimeoutError past it."""
+    Deadline = _DEADLINE.get()
+    if Deadline is None:
+        return LOCATE_TIMEOUT_S
+    Left = Deadline - time.perf_counter()
+    if Left <= 0:
+        raise TimeoutError("the object measurement's deadline passed")
+    return min(LOCATE_TIMEOUT_S, Left)
+
+
+def _WithDeadline(Locate):
+    """locate_objects under one deadline (LOCATE_DEADLINE_S from its start), read by _Late and _ModelTimeout."""
+    @functools.wraps(Locate)
+    def Timed(*Arguments, **Keywords):
+        Token = _DEADLINE.set(time.perf_counter() + LOCATE_DEADLINE_S)
+        try:
+            return Locate(*Arguments, **Keywords)
+        finally:
+            _DEADLINE.reset(Token)
+    return Timed
 
 
 def _LoadOllamaOptions() -> dict[str, Any]:
@@ -457,7 +496,7 @@ def _detect_single(image_data_url: str, task: dict[str, str] | None, model: str,
     }
     content, stats = None, {}
     try:
-        response = _http_json(f"{OLLAMA_BASE}/api/chat", payload, timeout=LOCATE_TIMEOUT_S)
+        response = _http_json(f"{OLLAMA_BASE}/api/chat", payload, timeout=_ModelTimeout())
         content = response["message"]["content"]
         stats = {key: response.get(key) for key in ("done_reason", "prompt_eval_count", "eval_count")}
         if isinstance(response.get("load_duration"), (int, float)):
@@ -535,7 +574,7 @@ def _detect_parsed(
         "messages": _chat_messages(prompt or _grounding_prompt(labels), image_data_url),
     }
     try:
-        response = _http_json(f"{OLLAMA_BASE}/api/chat", payload, timeout=LOCATE_TIMEOUT_S)
+        response = _http_json(f"{OLLAMA_BASE}/api/chat", payload, timeout=_ModelTimeout())
         content = response["message"]["content"]
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         return {"error": f"Ollama request failed: {exc}"}, None, {}
@@ -1021,6 +1060,7 @@ def _MeasureRow(measure, row: dict[str, Any], label: str, width: int, height: in
     return Entry, Reason, Box, Whole
 
 
+@_WithDeadline
 def locate_objects(
     image_data_url: str,
     labels: list[str] | None = None,
@@ -1043,6 +1083,7 @@ def locate_objects(
     object gets task_match (the strict task query's box lands on it) and
     task_query_only (measured only because the query found it), both false without one.
     locate_mode picks the path (LOCATE_MODES, _LocateMode): "single_call" by default.
+    It ends past LOCATE_DEADLINE_S (error_code "locate_timeout"), when the app has stopped waiting for it.
     """
     Started = time.perf_counter()
     Previous = None
@@ -1088,6 +1129,14 @@ def locate_objects(
         if not saved:
             camera_check["desk_save_error"] = why
         camera_model = {**camera_model, "drift_reference": remeasured}
+    # A desk pass that verified the camera in full: its basket rim is recorded for the calibration, so the rim can check
+    # the camera later where the desk cannot (RobotReference.RimRecordCandidate).
+    rim_record = RobotReference.TakeRimRecord(camera_check)
+    if rim_record is not None:
+        saved, why = RobotReference.RecordRim(rim_record, camera_model)
+        camera_check["rim_recorded"] = saved
+        if not saved:
+            camera_check["rim_record_error"] = why
     task = _TaskObject(task_object)
     if not camera_check["ok"]:
         blocked = {"ok": False, "error_code": camera_check["error_code"], "error": camera_check["error"],
@@ -1109,6 +1158,16 @@ def locate_objects(
     if mode == "single_call" and (not use_depth or labels or Carrying):
         mode = "vlm"
     checked_ms = round((time.perf_counter() - Started) * 1000, 1)
+
+    def timed_out() -> dict[str, Any]:
+        """Past the deadline (_Late): the app has stopped waiting, so nothing more is measured or registered."""
+        failed = {"ok": False, "error_code": "locate_timeout",
+                  "error": f"The object measurement took longer than {LOCATE_DEADLINE_S:g} s, when the app stops waiting for it, "
+                           "so it stopped: look again (if it keeps happening, the vision model is too slow or still loading)."}
+        _Record({**failed, "camera_check": camera_check, "model": picked_model, "locate_mode": mode}, labels,
+                depth if use_depth else None, [], task)
+        return failed
+
     samples: list[list[dict[str, Any]]] = []
     for index in range(LOCATE_SAMPLES if mode == "vlm" else 0):
         result = _detect_once(
@@ -1116,6 +1175,8 @@ def locate_objects(
             temperature=0 if index == 0 else 0.5,
         )
         if isinstance(result, dict):
+            if _Late():
+                return timed_out()
             if not samples:
                 failed = {"ok": False, **result}
                 _Record({**failed, "camera_check": camera_check, "model": picked_model}, labels,
@@ -1178,7 +1239,9 @@ def locate_objects(
     def measure(label: str, u: float, v: float, box, note: dict[str, Any], only=None,
                 trace: dict[str, Any] | None = None) -> tuple[dict[str, Any] | None, str | None]:
         """(entry, None); (None, why it is withheld); or (None, None) when nothing places it.
-        only and trace go to MeasureBox (its Only and Trace), and only when given."""
+        only and trace go to MeasureBox (its Only and Trace), and only when given. None past the deadline (_Late)."""
+        if _Late():
+            return None, "the object measurement's deadline passed"
         mapped = calibration.pixel_to_plane(u, v, mirrored)
         if use_depth:
             extra = {**({"Only": only} if only is not None else {}), **({"Trace": trace} if trace is not None else {})}
@@ -1296,6 +1359,8 @@ def locate_objects(
     landed: set[int] = set()
     refine_skipped: list[str] = []
     for group, u, v, spread, best in prepared:
+        if _Late():
+            break
         detections = group["detections"]
         why = ("all" if refine_all else "task" if id(group) in task_groups else "stand-in" if id(group) in stand_ins
                else "unstable" if spread > SAMPLE_UNSTABLE_PX else None)
@@ -1340,6 +1405,8 @@ def locate_objects(
         if index not in landed and not any(_LandsOn(query, query_boxes[other]) for other in orphans):
             orphans.append(index)
     for index in orphans:
+        if _Late():
+            break
         query, label = query_boxes[index], task["label"]
         # The robot and bin check reads the label, not the phrase: "eraser in the bin" is an eraser.
         reason = _RobotPartReason(label, label)
@@ -1378,6 +1445,8 @@ def locate_objects(
         single = _detect_single(image_data_url, task, picked_model, width, height)
         calls, model_ms = 1, round((time.perf_counter() - called) * 1000, 1)
         if isinstance(single, dict):
+            if _Late():
+                return timed_out()
             failed = {"ok": False, **single}
             _Record({**failed, "camera_check": camera_check, "model": picked_model, "locate_mode": mode}, labels, depth, [], task)
             return failed
@@ -1387,6 +1456,8 @@ def locate_objects(
         task_missing: str | None = "not in the reply" if task and task_box is None else None
         listed: list[tuple[float, float, float, float]] = []
         for row in rows:
+            if _Late():
+                break
             label = row["label"]
             reason = _RobotPartReason(label, task["label"] if task else None)
             if reason:
@@ -1415,7 +1486,7 @@ def locate_objects(
             objects.append(entry)
         # The single call missed the task's object (no row, a null row, or a box with nothing in it): one strict query.
         retried = None
-        if task and task_missing:
+        if task and task_missing and not _Late():
             retried = task_missing
             called = time.perf_counter()
             answer = _detect_once(image_data_url, None, picked_model, width, height, temperature=0,
@@ -1448,6 +1519,8 @@ def locate_objects(
         review ={"task_query_boxes": [[round(value, 4) for value in query] for query in query_boxes],
                   "task_absent": task_absent, "task_retry": retried} if task else {}
 
+    if _Late():
+        return timed_out()
     # Supports that disagree with the calibrated desk: the camera moved after all. On a desk-verified capture, and on
     # an "assumed" one, whose camera nothing checked (audit IH1); a camera the gripper tip verified skips it.
     tripped = _SceneTripwire(diagnostics, camera_check) if desk_verified or assumed else None
@@ -1484,7 +1557,8 @@ def locate_objects(
                 raise ValueError(CarryError or "the previous carrying scene is unavailable")
             Scene = SceneGeometry.Build(depth["depth_mm"], depth["intrinsics"], camera_model, {},
                                         Previous["support"], exclude, depth.get("seq"),
-                                        TaskEnvelope=Previous["task_object"], RemoveTarget=False, ArmBoxes=arm_boxes)
+                                        TaskEnvelope=Previous["task_object"], RemoveTarget=False, ArmBoxes=arm_boxes,
+                                        Assumed=assumed)
             Scene["carrying"] = True
             result["scene"] = SceneSafety.Register(Scene, camera_model, capture_time=depth.get("time"), generation=Generation)
         except ValueError as Exc:
@@ -1498,7 +1572,8 @@ def locate_objects(
             Target = Matches[0]
             try:
                 Scene = SceneGeometry.Build(depth["depth_mm"], depth["intrinsics"], camera_model, Target,
-                                            Target["support_geometry"], exclude, depth.get("seq"), ArmBoxes=arm_boxes)
+                                            Target["support_geometry"], exclude, depth.get("seq"), ArmBoxes=arm_boxes,
+                                            Assumed=assumed)
                 if SceneSafety is None:
                     raise ValueError("this bridge has no measured-scene safety registry")
                 Scene = SceneSafety.Register(Scene, camera_model, capture_time=depth.get("time"), generation=Generation)

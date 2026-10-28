@@ -8,9 +8,8 @@
 // 8002, 11434) to a closed port, every request to them is stubbed or refused in the browser, and the camera is fake.
 //   node TestSessionVideoUi.mjs
 import { chromium as Chromium } from "playwright";
-import { CadReadyMs, LaunchOptions, StartUiServer } from "./UiTestLib.mjs";
+import { CadReadyMs, LaunchOptions, StartUiServer, BackendPython } from "./UiTestLib.mjs";
 import { execFileSync as Execute } from "node:child_process";
-import Fs from "node:fs";
 import Path from "node:path";
 import Assert from "node:assert/strict";
 
@@ -18,7 +17,7 @@ const Root = import.meta.dirname, Backend = Path.resolve(Root, "../back end");
 const Server = await StartUiServer();
 const Base = Server.Url;
 const LivePorts = [8000, 8001, 8002, 11434];
-const Python = Fs.readFileSync(Path.join(Root, "../.backend-python.txt"), "utf8").replace(/^﻿/, "").trim();
+const Python = BackendPython();
 const State = JSON.parse(Execute(Python, ["-c", "import json, bridge_server; print(json.dumps(bridge_server.BridgeController().state_snapshot()))"],
   { cwd: Backend, encoding: "utf8", env: { ...process.env, SO101_DEPTH_CAMERA: "0", SO101_RECORDER: "0" } }));
 Object.assign(State, { arm_connected: true, torque: true, port: "FAKE", motion_epoch: 5, motion_route: null, motion_fault: null });

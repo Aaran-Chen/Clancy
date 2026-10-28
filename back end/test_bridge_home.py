@@ -49,14 +49,20 @@ class FakeBus:
             # Goal_Position register reads back as the present position rather
             # than 0. Seed that, or every joint appears to be commanded to 0.
             self.write("Goal_Position", name, self.position[name])
+            # Connect ends by closing the EEPROM lock (Lock = 1), as the real bus does (not a recorded write).
+            self.registers[("Lock", name)] = 1
 
     SetPositionRangeWhileCoasting = FeetechMotorsBus.SetPositionRangeWhileCoasting
 
     def enable_torque(self, num_retry: int = 0) -> None:
         self.torque_enabled = True
+        for name in bs.MOTOR_NAMES:  # Hold closes the EEPROM lock, Coast opens it, as on the real bus
+            self.registers[("Lock", name)] = 1
 
     def disable_torque(self, num_retry: int = 0) -> None:
         self.torque_enabled = False
+        for name in bs.MOTOR_NAMES:
+            self.registers[("Lock", name)] = 0
 
     def disconnect(self, disable_torque: bool = True) -> None:
         self.is_connected = False

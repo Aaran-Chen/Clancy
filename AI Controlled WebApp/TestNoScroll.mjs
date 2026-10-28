@@ -1,6 +1,6 @@
 import { chromium as Chromium } from "playwright";
-import { CadReadyMs, LaunchOptions, StartUiServer } from "./UiTestLib.mjs";
-import { readFileSync as ReadFile, mkdirSync as MakeDirectory } from "node:fs";
+import { CadReadyMs, LaunchOptions, StartUiServer, BackendPython } from "./UiTestLib.mjs";
+import { mkdirSync as MakeDirectory } from "node:fs";
 import { execFileSync as Execute } from "node:child_process";
 import { fileURLToPath as FilePath } from "node:url";
 import Path from "node:path";
@@ -21,7 +21,7 @@ import Assert from "node:assert/strict";
 // NoScrollShots=<folder> moves the screenshots; NoScrollReport=1 lists every
 // problem instead of stopping at the first state that has one.
 const Root = Path.dirname(FilePath(import.meta.url)), Backend = Path.resolve(Root, "../back end");
-const Python = ReadFile(Path.join(Root, "../.backend-python.txt"), "utf8").trim();
+const Python = BackendPython();
 const State = JSON.parse(Execute(Python, ["-c", "import json, bridge_server; print(json.dumps(bridge_server.BridgeController().state_snapshot()))"], { cwd: Backend, encoding: "utf8" }));
 Object.assign(State, { arm_connected: true, torque: true, port: "FAKE", motion_epoch: 5, motion_route: null, motion_fault: null });
 for (const Servo of Object.values(State.servos)) Servo.moving = false;

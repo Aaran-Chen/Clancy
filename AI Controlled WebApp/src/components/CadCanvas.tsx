@@ -1,4 +1,4 @@
-import { forwardRef as ForwardRef, useEffect as UseEffect, useImperativeHandle as UseImperativeHandle, useRef as UseRef, useState as UseState } from "react";
+import { forwardRef as ForwardRef, memo as Memo, useEffect as UseEffect, useImperativeHandle as UseImperativeHandle, useRef as UseRef, useState as UseState } from "react";
 import * as Three from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
@@ -51,6 +51,9 @@ const SceneTones = {
   Manual: { Cabin: 0x0a1024, Ground: 0x070c1c, Grid: 0x4f8dff, Live: 0x5fe0ff, Target: 0xa6c4ff, Ghost: 0xa6c4ff, Proposal: 0xcfdcf5 },
   Ai: { Cabin: 0x120d25, Ground: 0x0d0a1b, Grid: 0xa077e0, Live: 0x8fe3be, Target: 0xcab4ff, Ghost: 0xbfa8f0, Proposal: 0xf0b8e4 },
 } as const;
+/* Test hooks on the canvas (TestCadTypingUi): data-scene-build counts scene builds, data-draws counts frames, and
+   data-camera is the camera pose each frame was drawn from. */
+let SceneBuilds = 0;
 
 const CadCanvas = ForwardRef<ArmCanvasHandle, ArmCanvasProps>(function CadCanvas(Props, Ref) {
   const Host = UseRef<HTMLDivElement>(null);
@@ -89,6 +92,8 @@ const CadCanvas = ForwardRef<ArmCanvasHandle, ArmCanvasProps>(function CadCanvas
     Canvas.className = "arm-canvas cad-canvas";
     Canvas.setAttribute("aria-label", "Interactive XLeRobot and SO-101 CAD assembly");
     Canvas.dataset.cadReady = "false";
+    Canvas.dataset.sceneBuild = String(++SceneBuilds);
+    let Draws = 0;
     Element.appendChild(Canvas);
     Renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     Renderer.shadowMap.enabled = true; Renderer.shadowMap.type = Three.PCFSoftShadowMap;
@@ -495,6 +500,8 @@ const CadCanvas = ForwardRef<ArmCanvasHandle, ArmCanvasProps>(function CadCanvas
         });
       }
       Renderer.render(Scene, Camera);
+      Canvas.dataset.draws = String(++Draws);
+      Canvas.dataset.camera = [...Camera.position.toArray(), ...Controls.target.toArray(), Camera.zoom].map(Value => Value.toFixed(4)).join(",");
     }
     let FirstResize = true;
     const Resize = new ResizeObserver(() => {
@@ -812,4 +819,5 @@ const CadCanvas = ForwardRef<ArmCanvasHandle, ArmCanvasProps>(function CadCanvas
       <div className="cad-help" hidden={!Props.Settings.ShowHints}><RotateCcw size={12} /> Left drag empty space to pan · Right drag to orbit · Scroll empty space to zoom<br />Drag target in the screen plane · Scroll target for wrist angle · Click a joint handle to select that joint, then drag its knob, ring or handle to turn it</div></div>
   </div>;
 });
-export default CadCanvas;
+// Memoised: App re-renders on every keystroke in the AI box; the view re-renders, and redraws, only for its own props.
+export default Memo(CadCanvas);
